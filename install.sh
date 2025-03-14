@@ -64,6 +64,9 @@ fi
 echo -e "${BLUE}Creating installation directory...${NC}"
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
+mkdir -p logs
+mkdir -p storage
+mkdir -p caddy
 
 # Function to validate domain
 validate_domain() {
