@@ -1,0 +1,7 @@
+{
+  "app_image": "karloscodes/infinity-metrics-beta:latest",
+  "caddy_image": "caddy:2.7-alpine",
+  "config_version": "1.0.0",
+  "installer_version": "1.0.0",
+  "installer_url": "https://getinfinitymetrics.com/infinity-metrics-v1.0.0"
+}

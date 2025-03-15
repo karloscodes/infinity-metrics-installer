@@ -22,7 +22,7 @@ func TestConfigCollection(t *testing.T) {
 	})
 
 	// Create config
-	cfg := config.NewConfig(config.WithLogger(logger))
+	cfg := config.NewConfig(logger)
 
 	// Collect configuration from stdin
 	err := cfg.CollectFromUser()

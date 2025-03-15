@@ -7,11 +7,9 @@ GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
-BINARY_NAME_INSTALLER=infinity-metrics-installer
-BINARY_NAME_UPDATER=infinity-metrics-updater
+BINARY_NAME=infinity-metrics-installer
 BINARY_DIR=bin
-MAIN_INSTALLER_PATH=cmd/install/main.go
-MAIN_UPDATER_PATH=cmd/update/main.go
+MAIN_PATH=cmd/install/main.go
 
 # OS detection for Multipass installation
 UNAME_S := $(shell uname -s)
@@ -33,17 +31,13 @@ all: deps test build
 
 build: 
 	mkdir -p $(BINARY_DIR)
-	$(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_INSTALLER) $(MAIN_INSTALLER_PATH)
-	$(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_UPDATER) $(MAIN_UPDATER_PATH)
-	chmod +x $(BINARY_DIR)/$(BINARY_NAME_INSTALLER)
-	chmod +x $(BINARY_DIR)/$(BINARY_NAME_UPDATER)
+	$(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	chmod +x $(BINARY_DIR)/$(BINARY_NAME)
 
 build-all: deps
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_INSTALLER)-linux-amd64 $(MAIN_INSTALLER_PATH)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_INSTALLER)-linux-arm64 $(MAIN_INSTALLER_PATH)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_UPDATER)-linux-amd64 $(MAIN_UPDATER_PATH)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_UPDATER)-linux-arm64 $(MAIN_UPDATER_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME)-linux-amd64 $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME)-linux-arm64 $(MAIN_PATH)
 	chmod +x $(BINARY_DIR)/*
 
 clean:
@@ -68,8 +62,8 @@ deps:
 
 release: build-all
 	mkdir -p release
-	tar -czvf release/infinity-metrics-installer-linux-amd64.tar.gz -C $(BINARY_DIR) $(BINARY_NAME_INSTALLER)-linux-amd64 $(BINARY_NAME_UPDATER)-linux-amd64
-	tar -czvf release/infinity-metrics-installer-linux-arm64.tar.gz -C $(BINARY_DIR) $(BINARY_NAME_INSTALLER)-linux-arm64 $(BINARY_NAME_UPDATER)-linux-arm64
+	tar -czvf release/infinity-metrics-installer-linux-amd64.tar.gz -C $(BINARY_DIR) $(BINARY_NAME)-linux-amd64
+	tar -czvf release/infinity-metrics-installer-linux-arm64.tar.gz -C $(BINARY_DIR) $(BINARY_NAME)-linux-arm64
 	sha256sum release/*.tar.gz > release/checksums.txt
 
 multipass:
@@ -82,21 +76,19 @@ endif
 
 build-linux:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_INSTALLER) $(MAIN_INSTALLER_PATH)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME_UPDATER) $(MAIN_UPDATER_PATH)
-	chmod +x $(BINARY_DIR)/$(BINARY_NAME_INSTALLER)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	chmod +x $(BINARY_DIR)/$(BINARY_NAME)
 	chmod +x $(BINARY_DIR)/$(BINARY_NAME_UPDATER)
-	file $(BINARY_DIR)/$(BINARY_NAME_INSTALLER)
+	file $(BINARY_DIR)/$(BINARY_NAME)
 	file $(BINARY_DIR)/$(BINARY_NAME_UPDATER)
 
 integration-tests: clean build-linux multipass
 ifndef KEEP_VM
-	INSTALLER_BINARY=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME_INSTALLER) \
-	UPDATER_BINARY=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME_UPDATER) \
+	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 	$(GOTEST) -v ./tests
 else
-	INSTALLER_BINARY=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME_INSTALLER) \
-	UPDATER_BINARY=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME_UPDATER) \
+	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 	$(GOTEST) -v -tags keepvm ./tests ; multipass delete infinity-metrics-installer
 endif
 

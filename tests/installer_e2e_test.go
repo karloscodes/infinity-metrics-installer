@@ -23,26 +23,16 @@ func TestVMInstallation(t *testing.T) {
 	assert.NoError(t, err, "Failed to find project root")
 
 	// Get installer binary path
-	installerPath := os.Getenv("INSTALLER_BINARY")
+	installerPath := os.Getenv("BINARY_PATH")
 	if installerPath == "" {
 		installerPath = filepath.Join(projectRoot, "bin", "infinity-metrics-installer")
-		t.Logf("INSTALLER_BINARY not set, using default path: %s", installerPath)
+		t.Logf("BINARY_PATH not set, using default path: %s", installerPath)
 	} else {
-		t.Logf("INSTALLER_BINARY set to: %s", installerPath)
-	}
-
-	// Get updater binary path
-	updaterPath := os.Getenv("UPDATER_BINARY")
-	if updaterPath == "" {
-		updaterPath = filepath.Join(projectRoot, "bin", "infinity-metrics-updater")
-		t.Logf("UPDATER_BINARY not set, using default path: %s", updaterPath)
-	} else {
-		t.Logf("UPDATER_BINARY set to: %s", updaterPath)
+		t.Logf("BINARY_PATH set to: %s", installerPath)
 	}
 
 	// Check if the binaries exist
 	assert.FileExists(t, installerPath, "Installer binary should exist")
-	assert.FileExists(t, updaterPath, "Updater binary should exist")
 
 	// Path to the run_in_vm.sh script
 	vmScriptPath := filepath.Join(projectRoot, "tests", "run_in_vm.sh")

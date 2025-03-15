@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,237 +12,221 @@ import (
 	"infinity-metrics-installer/internal/logging"
 )
 
-// Option is a functional option for configuring Docker
-type Option func(*Docker)
-
 // Docker manages Docker operations
 type Docker struct {
 	logger *logging.Logger
 }
 
-// WithLogger sets the logger for Docker operations
-func WithLogger(logger *logging.Logger) Option {
-	return func(d *Docker) {
-		d.logger = logger
-	}
+// NewDocker creates a Docker manager
+func NewDocker(logger *logging.Logger) *Docker {
+	return &Docker{logger: logger}
 }
 
-// NewDocker creates a new Docker manager
-func NewDocker(options ...Option) *Docker {
-	// Create with default logger
-	d := &Docker{
-		logger: logging.NewLogger(logging.Config{Level: "info"}),
-	}
-
-	// Apply options
-	for _, option := range options {
-		option(d)
-	}
-
-	return d
-}
-
-// runCommand executes a command and returns its output and error
-func (d *Docker) runCommand(name string, args ...string) (string, error) {
-	d.logger.Debug("Running command: %s %s", name, strings.Join(args, " "))
-
+func (d *Docker) runCommand(args ...string) (string, error) {
+	d.logger.Debug("Running docker %s", strings.Join(args, " "))
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command("docker", args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, stderr.String())
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("docker %s failed: %w - %s", args[0], err, stderr.String())
 	}
-
 	return stdout.String(), nil
 }
 
-// runShellCommand executes a shell command and returns its output and error
-func (d *Docker) runShellCommand(command string) (string, error) {
-	d.logger.Debug("Running shell command: %s", command)
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("bash", "-c", command)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, stderr.String())
-	}
-
-	return stdout.String(), nil
-}
-
-// EnsureInstalled makes sure Docker is installed
 func (d *Docker) EnsureInstalled() error {
-	// Check if Docker is already installed
-	_, err := d.runCommand("docker", "--version")
-	if err == nil {
-		d.logger.Success("Docker is already installed")
+	if _, err := d.runCommand("version"); err == nil {
+		d.logger.Success("Docker is installed")
 		return nil
 	}
 
-	d.logger.Info("Docker not found, installing using official convenience script...")
-
-	// Install Docker using the official convenience script
-	installCmd := "curl -fsSL https://get.docker.com | sh"
-	start := time.Now()
-	output, err := d.runShellCommand(installCmd)
+	d.logger.Info("Installing Docker...")
+	_, err := exec.Command("bash", "-c", "curl -fsSL https://get.docker.com | sh").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to install Docker: %w", err)
+		return fmt.Errorf("install failed: %w", err)
 	}
-	elapsed := time.Since(start).Round(time.Second)
-	d.logger.Debug("Docker installation completed in %s", elapsed)
-	d.logger.Debug("Installation output: %s", output)
-
-	// Start and enable Docker service
-	d.logger.Info("Enabling Docker service")
-	_, err = d.runShellCommand("systemctl start docker && systemctl enable docker")
+	err = exec.Command("systemctl", "start", "docker").Run()
 	if err != nil {
-		return fmt.Errorf("failed to enable Docker service: %w", err)
+		return fmt.Errorf("start failed: %w", err)
+	}
+	err = exec.Command("systemctl", "enable", "docker").Run()
+	if err != nil {
+		return fmt.Errorf("enable failed: %w", err)
 	}
 
-	// Verify installation
-	version, err := d.runCommand("docker", "--version")
+	_, err = d.runCommand("version")
 	if err != nil {
-		return fmt.Errorf("Docker installation verification failed: %w", err)
+		return fmt.Errorf("verification failed: %w", err)
 	}
-
-	d.logger.Success("Docker installed successfully: %s", strings.TrimSpace(version))
+	d.logger.Success("Docker installed")
 	return nil
 }
 
-// InitializeSwarm initializes Docker Swarm
-func (d *Docker) InitializeSwarm() error {
-	// Check if already in swarm mode
-	d.logger.Info("Checking Docker Swarm status")
-	info, err := d.runCommand("docker", "info")
-	if err != nil {
-		return fmt.Errorf("failed to get Docker info: %w", err)
-	}
+func (d *Docker) Deploy(conf *config.Config) error {
+	data := conf.GetData()
+	dataDir := data.InstallDir
 
-	if strings.Contains(info, "Swarm: active") {
-		d.logger.Success("Docker Swarm is already active")
-		return nil
-	}
-
-	// Get public IP address
-	d.logger.Info("Getting public IP address")
-	ipOutput, err := d.runCommand("curl", "-s", "ifconfig.me")
-	if err != nil {
-		return fmt.Errorf("failed to get public IP: %w", err)
-	}
-	publicIP := strings.TrimSpace(ipOutput)
-	d.logger.Debug("Public IP: %s", publicIP)
-
-	// Initialize swarm
-	d.logger.Info("Initializing Docker Swarm")
-	output, err := d.runCommand("docker", "swarm", "init", "--advertise-addr", publicIP)
-	if err != nil {
-		return fmt.Errorf("failed to initialize swarm: %w", err)
-	}
-
-	d.logger.Success("Docker Swarm initialized successfully")
-	d.logger.Debug("Swarm init output: %s", strings.TrimSpace(output))
-
-	return nil
-}
-
-// DeployStack deploys the Docker stack
-func (d *Docker) DeployStack(installDir string, conf *config.Config) error {
-	deploymentDir := filepath.Join(installDir, "deployment")
-	envFile := filepath.Join(installDir, ".env")
-
-	// Process docker-compose.yml with environment variables from .env file
-	d.logger.Info("Preparing stack configuration")
-
-	// Create docker-compose config command with env file
-	configCmd := exec.Command("docker", "compose", "--env-file", envFile, "config")
-	configCmd.Dir = deploymentDir
-
-	// Execute and capture output
-	var configOutput bytes.Buffer
-	configCmd.Stdout = &configOutput
-
-	var configError bytes.Buffer
-	configCmd.Stderr = &configError
-
-	if err := configCmd.Run(); err != nil {
-		return fmt.Errorf("failed to process configuration: %w - %s", err, configError.String())
-	}
-
-	// Write processed config to a temporary file
-	tempStackFile := filepath.Join(deploymentDir, "stack.yml")
-	if err := os.WriteFile(tempStackFile, configOutput.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("failed to write stack file: %w", err)
-	}
-	d.logger.Debug("Stack configuration processed and saved to %s", tempStackFile)
-
-	// Deploy stack with processed config
-	d.logger.Info("Deploying Docker stack")
-	deployCmd := exec.Command(
-		"docker", "stack", "deploy",
-		"-c", tempStackFile,
-		"infinity-metrics",
-		"--prune",
-	)
-	deployCmd.Dir = deploymentDir
-
-	var stdout, stderr bytes.Buffer
-	deployCmd.Stdout = &stdout
-	deployCmd.Stderr = &stderr
-
-	err := deployCmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to deploy stack: %w - %s", err, stderr.String())
-	}
-
-	d.logger.Success("Stack deployed successfully")
-	if stdout.Len() > 0 {
-		for _, line := range strings.Split(stdout.String(), "\n") {
-			if line != "" {
-				d.logger.Debug("%s", line)
-			}
+	// Create directories
+	for _, dir := range []string{
+		dataDir + "/storage",
+		dataDir + "/logs",
+		dataDir + "/caddy",
+		dataDir + "/caddy/config",
+		dataDir + "/storage/backups",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
 
+	// Write initial Caddyfile
+	caddyFile := dataDir + "/Caddyfile"
+	if err := os.WriteFile(caddyFile, []byte("localhost:80 {\n  reverse_proxy infinity-app-1:8080\n}"), 0o644); err != nil {
+		return fmt.Errorf("write Caddyfile: %w", err)
+	}
+
+	// Pull images
+	d.logger.Info("Pulling %s", data.AppImage)
+	if _, err := d.runCommand("pull", data.AppImage); err != nil {
+		return fmt.Errorf("pull app: %w", err)
+	}
+	d.logger.Info("Pulling %s", data.CaddyImage)
+	if _, err := d.runCommand("pull", data.CaddyImage); err != nil {
+		return fmt.Errorf("pull caddy: %w", err)
+	}
+
+	// Start Caddy
+	caddyName := "infinity-caddy"
+	if !d.isRunning(caddyName) {
+		d.stopAndRemove(caddyName)
+		_, err := d.runCommand("run", "-d",
+			"--name", caddyName,
+			"-p", "80:80", "-p", "443:443", "-p", "443:443/udp",
+			"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
+			"-v", dataDir+"/caddy:/data",
+			"-v", dataDir+"/caddy/config:/config",
+			"-v", dataDir+"/logs:/data/logs",
+			"-e", "DOMAIN="+data.Domain,
+			"-e", "ADMIN_EMAIL="+data.AdminEmail,
+			"--restart", "unless-stopped",
+			data.CaddyImage,
+		)
+		if err != nil {
+			return fmt.Errorf("start caddy: %w", err)
+		}
+	}
+
+	// Start app
+	return d.deployApp(data, "infinity-app-1")
+}
+
+func (d *Docker) Update(conf *config.Config) error {
+	data := conf.GetData()
+	dataDir := data.InstallDir
+
+	// Pull new images
+	d.logger.Info("Pulling %s", data.AppImage)
+	if _, err := d.runCommand("pull", data.AppImage); err != nil {
+		return fmt.Errorf("pull app: %w", err)
+	}
+	d.logger.Info("Pulling %s", data.CaddyImage)
+	if _, err := d.runCommand("pull", data.CaddyImage); err != nil {
+		return fmt.Errorf("pull caddy: %w", err)
+	}
+
+	// Backup SQLite
+	if err := d.backupSQLite(dataDir, "infinity-app-1"); err != nil {
+		d.logger.Warn("Backup failed, proceeding: %v", err)
+	}
+
+	// Rolling update
+	currentName := "infinity-app-1"
+	newName := "infinity-app-2"
+	if d.isRunning(newName) {
+		currentName, newName = newName, currentName
+	}
+
+	d.logger.Info("Starting %s", newName)
+	if err := d.deployApp(data, newName); err != nil {
+		d.stopAndRemove(newName)
+		return fmt.Errorf("start new: %w", err)
+	}
+
+	// Health check
+	for i := 0; i < 10; i++ {
+		if _, err := d.runCommand("exec", newName, "curl", "-f", "http://localhost:8080/_health"); err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+		if i == 9 {
+			d.logger.Error("Health check failed for %s", newName)
+			d.stopAndRemove(newName)
+			return fmt.Errorf("new container unhealthy")
+		}
+	}
+
+	// Update Caddy
+	caddyConfig := fmt.Sprintf("%s:80 {\n  reverse_proxy %s:8080\n}", data.Domain, newName)
+	if err := d.updateCaddyConfig("infinity-caddy", caddyConfig); err != nil {
+		d.stopAndRemove(newName)
+		return fmt.Errorf("update caddy: %w", err)
+	}
+
+	d.stopAndRemove(currentName)
+	d.runCommand("image", "prune", "-f")
+	d.logger.Success("Update completed")
 	return nil
 }
 
-// CheckDockerStatus returns the status of Docker components
-func (d *Docker) CheckDockerStatus() (map[string]string, error) {
-	status := make(map[string]string)
-
-	// Check Docker version
-	version, err := d.runCommand("docker", "--version")
+func (d *Docker) deployApp(data config.ConfigData, name string) error {
+	d.stopAndRemove(name)
+	_, err := d.runCommand("run", "-d",
+		"--name", name,
+		"-v", data.InstallDir+"/storage:/app/storage",
+		"-v", data.InstallDir+"/logs:/app/logs",
+		"-e", "INFINITY_METRICS_LOG_LEVEL=info",
+		"-e", "INFINITY_METRICS_APP_PORT=8080",
+		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
+		"-e", "SERVER_INSTANCE_ID="+name,
+		"--restart", "unless-stopped",
+		data.AppImage,
+	)
 	if err != nil {
-		status["docker"] = "not installed"
-	} else {
-		status["docker"] = strings.TrimSpace(version)
+		return fmt.Errorf("deploy %s: %w", name, err)
 	}
+	return nil
+}
 
-	// Check Swarm status
-	info, err := d.runCommand("docker", "info")
+func (d *Docker) backupSQLite(dataDir, appName string) error {
+	timestamp := time.Now().Format("20060102150405")
+	backupFile := fmt.Sprintf("%s/backup-%s.db", dataDir+"/storage/backups", timestamp)
+	_, err := d.runCommand("exec", appName, "cp", "/app/storage/infinity-metrics-production.db", backupFile)
 	if err != nil {
-		status["swarm"] = "unknown"
-	} else if strings.Contains(info, "Swarm: active") {
-		status["swarm"] = "active"
-	} else {
-		status["swarm"] = "inactive"
+		return fmt.Errorf("backup sqlite: %w", err)
 	}
+	d.logger.Info("SQLite backed up to %s", backupFile)
+	return nil
+}
 
-	// Check if infinity-metrics stack is deployed
-	stacks, err := d.runCommand("docker", "stack", "ls")
-	if err != nil {
-		status["stack"] = "unknown"
-	} else if strings.Contains(stacks, "infinity-metrics") {
-		status["stack"] = "deployed"
-	} else {
-		status["stack"] = "not deployed"
+func (d *Docker) stopAndRemove(name string) {
+	d.runCommand("stop", name)
+	d.runCommand("rm", name)
+}
+
+func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
+	var buf bytes.Buffer
+	buf.WriteString(caddyConfig)
+	cmd := exec.Command("docker", "exec", caddyName, "caddy", "reload", "--config", "/dev/stdin")
+	cmd.Stdin = &buf
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("reload caddy: %w - %s", err, stderr.String())
 	}
+	return nil
+}
 
-	return status, nil
+func (d *Docker) isRunning(name string) bool {
+	out, err := d.runCommand("ps", "-q", "-f", "name="+name)
+	return err == nil && strings.TrimSpace(out) != ""
 }
