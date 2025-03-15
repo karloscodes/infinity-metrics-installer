@@ -87,7 +87,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 
 	// Pull images
 	d.logger.Info("Pulling %s", data.AppImage)
-	if _, err := d.runCommand("pull", data.AppImage); err != nil {
+	if _, err := d.runCommand("pull", "always", data.AppImage); err != nil {
 		return fmt.Errorf("pull app: %w", err)
 	}
 	d.logger.Info("Pulling %s", data.CaddyImage)
