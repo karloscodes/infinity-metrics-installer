@@ -1,0 +1,42 @@
+name: Integration Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build binaries
+        run: |
+          make build-linux GOARCH=amd64
+
+      - name: Run installer
+        run: |
+          sudo ./bin/infinity-metrics-installer --config test_config.env
+        env:
+          DOMAIN: test.infinitymetrics.local
+          ADMIN_EMAIL: admin@infinitymetrics.local
+          INFINITY_METRICS_LICENSE_KEY: TEST-LICENSE-KEY
+          ENABLE_BACKUPS: false
+          DOCKER_REGISTRY: localhost
+          TAG: latest
+
+      - name: Verify installation
+        run: |
+          docker --version
+          docker info --format '{{.Swarm.LocalNodeState}}' | grep active
+          docker stack ls | grep infinity-metrics
