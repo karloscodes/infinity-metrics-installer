@@ -161,7 +161,7 @@ func (d *Docker) DeployStack(installDir string, conf *config.Config) error {
 	d.logger.Info("Preparing stack configuration")
 
 	// Create docker-compose config command with env file
-	configCmd := exec.Command("docker compose", "--env-file", envFile, "config")
+	configCmd := exec.Command("docker", "compose", "--env-file", envFile, "config")
 	configCmd.Dir = deploymentDir
 
 	// Execute and capture output
