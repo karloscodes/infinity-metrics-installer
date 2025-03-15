@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -154,37 +155,38 @@ func (d *Docker) InitializeSwarm() error {
 // DeployStack deploys the Docker stack
 func (d *Docker) DeployStack(installDir string, conf *config.Config) error {
 	deploymentDir := filepath.Join(installDir, "deployment")
-	// Pull images
-	// registry := conf.GetData().DockerRegistry
-	// tag := conf.GetData().DockerImageTag
-	// image := conf.GetData().DockerImage
+	envFile := filepath.Join(installDir, ".env")
 
-	// fullImageName := fmt.Sprintf("%s/%s:%s", registry, image, tag)
+	// Process docker-compose.yml with environment variables from .env file
+	d.logger.Info("Preparing stack configuration")
 
-	// d.logger.Info("Pulling Docker images")
+	// Create docker-compose config command with env file
+	configCmd := exec.Command("docker compose", "--env-file", envFile, "config")
+	configCmd.Dir = deploymentDir
 
-	// // Pull infinity-metrics image
-	// d.logger.Info("Pulling %s", fullImageName)
-	// output, err := d.runCommand("docker", "pull", fullImageName)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to pull infinity-metrics image: %w", err)
-	// }
-	// d.logger.Debug("Pull output: %s", strings.TrimSpace(output))
+	// Execute and capture output
+	var configOutput bytes.Buffer
+	configCmd.Stdout = &configOutput
 
-	// // Pull Caddy image
-	// d.logger.Info("Pulling caddy:2.7-alpine")
-	// output, err = d.runCommand("docker", "pull", "caddy:2.7-alpine")
-	// if err != nil {
-	// 	return fmt.Errorf("failed to pull caddy image: %w", err)
-	// }
-	// d.logger.Debug("Pull output: %s", strings.TrimSpace(output))
+	var configError bytes.Buffer
+	configCmd.Stderr = &configError
 
-	// Deploy stack
+	if err := configCmd.Run(); err != nil {
+		return fmt.Errorf("failed to process configuration: %w - %s", err, configError.String())
+	}
+
+	// Write processed config to a temporary file
+	tempStackFile := filepath.Join(deploymentDir, "stack.yml")
+	if err := os.WriteFile(tempStackFile, configOutput.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("failed to write stack file: %w", err)
+	}
+	d.logger.Debug("Stack configuration processed and saved to %s", tempStackFile)
+
+	// Deploy stack with processed config
 	d.logger.Info("Deploying Docker stack")
 	deployCmd := exec.Command(
 		"docker", "stack", "deploy",
-		"-c", fmt.Sprintf("docker-compose.yml"),
-		"--env-file", filepath.Join(installDir, ".env"),
+		"-c", tempStackFile,
 		"infinity-metrics",
 		"--prune",
 	)

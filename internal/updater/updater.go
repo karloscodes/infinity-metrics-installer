@@ -133,10 +133,10 @@ func (u *Updater) Run() error {
 	}
 
 	// 5. Deploy the updated stack
-	u.logger.Step(5, totalSteps, "Deploying updated stack")
-	if err := u.deployStack(); err != nil {
-		return fmt.Errorf("failed to deploy stack: %w", err)
-	}
+	// u.logger.Step(5, totalSteps, "Deploying updated stack")
+	// if err := docker.deployStack(); err != nil {
+	// 	return fmt.Errorf("failed to deploy stack: %w", err)
+	// }
 
 	// Verify and display results
 	u.logger.Success("Update completed successfully")
@@ -268,33 +268,5 @@ func (u *Updater) updateRepository() error {
 		u.logger.Success("Repository updated successfully")
 	}
 
-	return nil
-}
-
-// deployStack deploys the updated stack
-func (u *Updater) deployStack() error {
-	u.logger.Info("Deploying stack with zero-downtime updates")
-
-	// Deploy the stack
-	composeFile := filepath.Join(u.installDir, "docker-compose.yml")
-	if _, err := os.Stat(composeFile); err != nil {
-		return fmt.Errorf("docker-compose.yml not found: %s", composeFile)
-	}
-
-	cmd := exec.Command(
-		"docker", "stack", "deploy",
-		"-c", composeFile,
-		"infinity-metrics",
-		"--env-file", filepath.Join(u.installDir, ".env"),
-		"--prune",
-	)
-	cmd.Dir = u.installDir
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("stack deployment failed: %s, %w", string(output), err)
-	}
-
-	u.logger.Success("Stack deployed successfully")
 	return nil
 }

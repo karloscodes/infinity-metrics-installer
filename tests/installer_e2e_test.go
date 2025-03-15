@@ -49,7 +49,7 @@ func TestVMInstallation(t *testing.T) {
 	assert.FileExists(t, vmScriptPath, "VM script should exist")
 
 	// Run the script with both binary paths
-	cmd := exec.Command(vmScriptPath, "--binary="+installerPath, "--updater="+updaterPath)
+	cmd := exec.Command(vmScriptPath, "--binary="+installerPath, "--updater="+updaterPath, "--keep-vm")
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
