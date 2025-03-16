@@ -41,45 +41,13 @@ jobs:
             exit 1
           fi
 
-      - name: Setup and authenticate Multipass
+      - name: Set up Multipass
+        uses: multipass/multipass-action@v0.3.0
+        with:
+          multipass-version: '1.14.0'  # Use a specific version for stability
+
+      - name: Verify Multipass installation
         run: |
-          # Install multipass
-          sudo apt update
-          sudo apt install -y snapd
-          sudo snap install multipass
-          
-          # Stop the multipass service
-          sudo snap stop multipass
-          
-          # Remove any existing multipass data
-          sudo rm -rf /var/snap/multipass/common/data/multipassd/*
-          
-          # Create directory for local socket and set permissions
-          sudo mkdir -p /var/snap/multipass/common/multipass_socket
-          sudo chmod 777 /var/snap/multipass/common/
-          
-          # Start multipass service
-          sudo snap start multipass
-          sleep 5
-          
-          # Create a local user and authenticate (non-interactive)
-          cat > /tmp/multipass_config.yaml << EOF
-          local:
-            access-token: github-ci-token
-          EOF
-          sudo mkdir -p /root/.config/multipass/
-          sudo cp /tmp/multipass_config.yaml /root/.config/multipass/
-          
-          # Authenticate as root (which should be auto-accepted due to config file)
-          sudo multipass authenticate local
-          
-          # Copy the credentials to runner user
-          mkdir -p ~/.config/multipass/
-          sudo cp /root/.config/multipass/client.crt ~/.config/multipass/
-          sudo cp /root/.config/multipass/client.key ~/.config/multipass/
-          sudo chown -R $(whoami) ~/.config/multipass/
-          
-          # Test that multipass works now
           multipass version
           multipass list
 
@@ -87,16 +55,25 @@ jobs:
         env:
           LICENSE_KEY: "TEST-LICENSE-KEY"
           ENV: "test"
+          BINARY_PATH: "./bin/infinity-metrics-v${{ env.VERSION }}-amd64"
         run: |
+          # Ensure Multipass is ready
+          for i in {1..5}; do
+            multipass list && break
+            echo "Multipass not ready, retrying ($i/5)..."
+            sleep 5
+          done || (echo "Multipass failed to start" && exit 1)
           # Run make test with versioned binary
-          make test
+          KEEP_VM=1 make test
 
       - name: Multipass diagnostics (if tests failed)
         if: failure()
         run: |
           multipass list || true
+          multipass info infinity-test-vm || true
           ls -la ~/.config/multipass/ || true
-          snap services multipass || true
+          cat tests/run_in_vm.sh || true
+          ls -la bin/ || true
 
       - name: Cleanup Multipass VMs
         if: always()
