@@ -1,4 +1,4 @@
-name: Integration Tests and Release
+name: Release
 
 on:
   push:

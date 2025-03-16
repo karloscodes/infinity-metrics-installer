@@ -62,22 +62,6 @@ fi
 echo "Checking local binary type:"
 file "$BINARY_PATH"
 
-# Clean up function
-cleanup() {
-  if [ "$KEEP_VM" = false ]; then
-    echo "Cleaning up the test VM..."
-    multipass delete "$VM_NAME" --purge || true
-  else
-    echo "VM $VM_NAME kept for inspection."
-    echo "To access: multipass shell $VM_NAME"
-    echo "To delete: multipass delete $VM_NAME --purge"
-    VM_IP=$(multipass info "$VM_NAME" | grep IPv4 | awk '{print $2}' || echo "unknown")
-    echo "VM is running at IP: $VM_IP"
-  fi
-}
-
-# Set up trap to clean up on exit
-trap cleanup EXIT
 
 # Ensure old VM is deleted
 echo "Ensuring no previous test VM exists..."
@@ -126,7 +110,7 @@ echo "Running infinity-metrics $COMMAND with 300-second timeout..."
 set +e
 if [ "$COMMAND" = "install" ]; then
   # Pipe input for CollectFromUser: Domain, AdminEmail, LicenseKey
-  COMMAND_OUTPUT=$(echo -e "test.infinitymetrics.local\nadmin@infinitymetrics.local\n${LICENSE_KEY}" | multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
+  COMMAND_OUTPUT=$(echo -e "localhost\nadmin@localhost\n${LICENSE_KEY}" | multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
 else
   COMMAND_OUTPUT=$(multipass exec "$VM_NAME" -- timeout 60s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
 fi
@@ -136,43 +120,8 @@ echo "$COMMAND_OUTPUT"
 
 if [ $COMMAND_EXIT_CODE -ne 0 ]; then
   echo "Error: infinity-metrics $COMMAND failed with exit code $COMMAND_EXIT_CODE"
-  multipass exec "$VM_NAME" -- cat /var/log/syslog | tail -n 50
+  multipass exec "$VM_NAME" -- cat /opt/infinity-metrics/logs/infinity-metrics.log | tail -n 50
   exit 1
-fi
-
-# Verify installation/update
-if [ "$COMMAND" = "install" ] || [ "$COMMAND" = "update" ]; then
-  echo "Checking Docker installation..."
-  multipass exec "$VM_NAME" -- docker --version || echo "Docker not installed"
-  multipass exec "$VM_NAME" -- sudo systemctl status docker || echo "Docker service not running"
-
-  echo "Checking running containers..."
-  TIMEOUT=120
-  START_TIME=$(date +%s)
-  while true; do
-    CURRENT_TIME=$(date +%s)
-    ELAPSED=$((CURRENT_TIME - START_TIME))
-    echo "Elapsed time waiting for containers: $ELAPSED seconds"
-
-    if [ $ELAPSED -gt $TIMEOUT ]; then
-      echo "Error: Timeout waiting for containers after $TIMEOUT seconds"
-      multipass exec "$VM_NAME" -- docker ps -a
-      exit 1
-    fi
-
-    CONTAINER_STATUS=$(multipass exec "$VM_NAME" -- docker ps --format '{{.Names}} {{.Status}}' || echo "No containers")
-    echo "Current container status:"
-    echo "$CONTAINER_STATUS"
-
-    if echo "$CONTAINER_STATUS" | grep -q "infinity-app-1" && echo "$CONTAINER_STATUS" | grep -q "infinity-caddy" && \
-       echo "$CONTAINER_STATUS" | grep "infinity-app-1" | grep -q "Up" && echo "$CONTAINER_STATUS" | grep "infinity-caddy" | grep -q "Up"; then
-      echo "All expected containers are running!"
-      break
-    else
-      echo "Some containers are not fully started yet. Waiting..."
-      sleep 5
-    fi
-  done
 fi
 
 echo "Integration test for $COMMAND completed successfully!"

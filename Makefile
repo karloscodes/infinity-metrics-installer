@@ -96,11 +96,13 @@ e2e-tests: clean build-linux multipass
 	
 	@if [ "$(KEEP_VM)" = "1" ]; then \
 		echo "Keeping VM after tests"; \
+		ENV=test \
 		BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 		$(GOTEST) -v -tags keepvm ./tests; \
 		echo "VM kept, not deleting infinity-test-vm"; \
 	else \
 		echo "Not keeping VM, will delete after tests"; \
+		ENV=test \
 		BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 		$(GOTEST) -v ./tests; \
 		multipass delete infinity-test-vm --purge || true; \

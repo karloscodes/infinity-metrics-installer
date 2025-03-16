@@ -70,6 +70,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
+	// Create required directories
 	for _, dir := range []string{
 		dataDir + "/storage",
 		dataDir + "/logs",
@@ -82,12 +83,24 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
+	// Create Docker network if it doesn't exist
+	_, err := d.RunCommand("network", "inspect", "infinity-network")
+	if err != nil {
+		d.logger.Info("Creating Docker network...")
+		_, err = d.RunCommand("network", "create", "infinity-network")
+		if err != nil {
+			return fmt.Errorf("create network: %w", err)
+		}
+	}
+
+	// Generate and write Caddyfile
 	caddyFile := dataDir + "/Caddyfile"
 	caddyContent := d.generateCaddyfile(data, "infinity-app-1", "")
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
 
+	// Pull required Docker images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s", image)
 		for i := 0; i < 3; i++ {
@@ -100,11 +113,13 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
+	// Deploy Caddy container
 	caddyName := "infinity-caddy"
 	if !d.IsRunning(caddyName) {
 		d.StopAndRemove(caddyName)
 		_, err := d.RunCommand("run", "-d",
 			"--name", caddyName,
+			"--network", "infinity-network",
 			"-p", "80:80", "-p", "443:443", "-p", "443:443/udp",
 			"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
 			"-v", dataDir+"/caddy:/data",
@@ -120,6 +135,9 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		if err != nil {
 			return fmt.Errorf("start caddy: %w", err)
 		}
+	} else {
+		// Ensure existing container is connected to the network
+		_, _ = d.RunCommand("network", "connect", "infinity-network", caddyName)
 	}
 
 	return d.DeployApp(data, "infinity-app-1")
@@ -128,6 +146,16 @@ func (d *Docker) Deploy(conf *config.Config) error {
 func (d *Docker) Update(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
+
+	// Ensure network exists
+	_, err := d.RunCommand("network", "inspect", "infinity-network")
+	if err != nil {
+		d.logger.Info("Creating Docker network...")
+		_, err = d.RunCommand("network", "create", "infinity-network")
+		if err != nil {
+			return fmt.Errorf("create network: %w", err)
+		}
+	}
 
 	// Pull new images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
@@ -170,6 +198,9 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.StopAndRemove(newName)
 		time.Sleep(2 * time.Second)
 	}
+
+	// Connect new container to network if needed
+	_, _ = d.RunCommand("network", "connect", "infinity-network", newName)
 
 	// Health check new container
 	for i := 0; i < 5; i++ {
@@ -221,12 +252,14 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	d.StopAndRemove(name)
 	_, err := d.RunCommand("run", "-d",
 		"--name", name,
+		"--network", "infinity-network",
 		"-v", data.InstallDir+"/storage:/app/storage",
 		"-v", data.InstallDir+"/logs:/app/logs",
 		"-e", "INFINITY_METRICS_LOG_LEVEL=info",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
 		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
 		"-e", "SERVER_INSTANCE_ID="+name,
+		// Port 8080 no longer exposed to host
 		"--memory=512m",
 		"--restart", "unless-stopped",
 		data.AppImage,
@@ -265,6 +298,18 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 	if secondaryApp != "" {
 		upstreams += " " + secondaryApp + ":8080"
 	}
+
+	// Determine TLS configuration based on environment
+	env := os.Getenv("ENV")
+	var tlsConfig string
+	if env == "test" {
+		d.logger.Info("Using self-signed certificate for test environment")
+		tlsConfig = "internal"
+	} else {
+		d.logger.Info("Using Let's Encrypt for production environment")
+		tlsConfig = data.AdminEmail
+	}
+
 	return fmt.Sprintf(`{
     admin off
     email %s
@@ -284,11 +329,7 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 }
 
 %s:443 {
-    tls %s {
-        protocols tls1.2 tls1.3
-        curves x25519 secp256r1
-        ciphers TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-    }
+    tls %s
     encode zstd gzip
     
     file_server /assets/* {
@@ -335,5 +376,5 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
         @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} <= 599
         respond @5xx "Service temporarily unavailable" 503
     }
-}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, data.AdminEmail, upstreams, data.Domain)
+}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, tlsConfig, upstreams, data.Domain)
 }
