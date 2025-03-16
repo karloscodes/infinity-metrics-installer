@@ -42,7 +42,8 @@ jobs:
       - name: Run integration tests
         run: |
           make test
-
+        env:
+          GITHUB_ACTIONS: true
 
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
