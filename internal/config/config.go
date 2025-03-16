@@ -17,16 +17,15 @@ const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
-	Domain           string // Local: User-provided
-	AdminEmail       string // Local: User-provided
-	LicenseKey       string // Local: User-provided
-	AppImage         string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage       string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
-	InstallDir       string // Default: e.g., "/opt/infinity-metrics"
-	BackupPath       string // Default: SQLite backup location
-	ConfigVersion    string // GitHub Release: Tracks applied config version
-	InstallerVersion string // GitHub Release: Version of the infinity-metrics binary
-	InstallerURL     string // GitHub Release: URL to download new infinity-metrics binary
+	Domain       string // Local: User-provided
+	AdminEmail   string // Local: User-provided
+	LicenseKey   string // Local: User-provided
+	AppImage     string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage   string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
+	InstallDir   string // Default: e.g., "/opt/infinity-metrics"
+	BackupPath   string // Default: SQLite backup location
+	Version      string // GitHub Release: Version of the infinity-metrics binary
+	InstallerURL string // GitHub Release: URL to download new infinity-metrics binary
 }
 
 // Config manages configuration
@@ -40,16 +39,15 @@ func NewConfig(logger *logging.Logger) *Config {
 	return &Config{
 		logger: logger,
 		data: ConfigData{
-			Domain:           "", // Required from user
-			AdminEmail:       "", // Required from user
-			LicenseKey:       "", // Required from user
-			AppImage:         "karloscodes/infinity-metrics-beta:latest",
-			CaddyImage:       "caddy:2.7-alpine",
-			InstallDir:       "/opt/infinity-metrics",
-			BackupPath:       "/opt/infinity-metrics/storage/backups",
-			ConfigVersion:    "0.0.0",
-			InstallerVersion: "0.0.0",
-			InstallerURL:     fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo), // Default base URL
+			Domain:       "", // Required from user
+			AdminEmail:   "", // Required from user
+			LicenseKey:   "", // Required from user
+			AppImage:     "karloscodes/infinity-metrics-beta:latest",
+			CaddyImage:   "caddy:2.7-alpine",
+			InstallDir:   "/opt/infinity-metrics",
+			BackupPath:   "/opt/infinity-metrics/storage/backups",
+			Version:      "0.0.0",
+			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo), // Default base URL
 		},
 	}
 }
@@ -114,10 +112,8 @@ func (c *Config) LoadFromFile(filename string) error {
 			c.data.InstallDir = value
 		case "BACKUP_PATH":
 			c.data.BackupPath = value
-		case "CONFIG_VERSION":
-			c.data.ConfigVersion = value
-		case "INSTALLER_VERSION":
-			c.data.InstallerVersion = value
+		case "VERSION":
+			c.data.Version = value
 		case "INSTALLER_URL":
 			c.data.InstallerURL = value
 		}
@@ -145,9 +141,7 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "CADDY_IMAGE=%s\n", c.data.CaddyImage)
 	fmt.Fprintf(file, "INSTALL_DIR=%s\n", c.data.InstallDir)
 	fmt.Fprintf(file, "BACKUP_PATH=%s\n", c.data.BackupPath)
-	fmt.Fprintf(file, "CONFIG_VERSION=%s\n", c.data.ConfigVersion)
-	fmt.Fprintf(file, "INSTALLER_VERSION=%s\n", c.data.InstallerVersion)
-	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
+	fmt.Fprintf(file, "VERSION=%s\n", c.data.Version)
 
 	c.logger.Success("Configuration saved to %s", filename)
 	return nil
@@ -214,8 +208,7 @@ func (c *Config) FetchFromServer(_ string) error {
 	}
 
 	// Update fields from release
-	c.data.ConfigVersion = version
-	c.data.InstallerVersion = version
+	c.data.Version = version
 	if binaryURL != "" {
 		c.data.InstallerURL = binaryURL
 	} else {

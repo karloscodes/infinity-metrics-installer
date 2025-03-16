@@ -24,14 +24,6 @@ jobs:
         run: |
           make deps
 
-      - name: Set up Docker
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io
-          sudo systemctl start docker
-          sudo usermod -aG docker $USER
-          newgrp docker
-
       - name: Read version from .version
         id: version
         run: |

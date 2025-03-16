@@ -48,8 +48,8 @@ func (u *Updater) Run(currentVersion string) error {
 	}
 
 	// Check if update is needed
-	if data.InstallerVersion == currentVersion {
-		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, data.InstallerVersion)
+	if data.Version == currentVersion {
+		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, data.Version)
 	} else {
 		arch := runtime.GOARCH
 		if arch != "amd64" && arch != "arm64" {
@@ -59,7 +59,7 @@ func (u *Updater) Run(currentVersion string) error {
 			if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
-				u.logger.Success("Binary updated to version %s, restarting", data.InstallerVersion)
+				u.logger.Success("Binary updated to version %s, restarting", data.Version)
 				// Restart with the new binary
 				return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
 			}
