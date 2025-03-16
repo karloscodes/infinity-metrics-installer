@@ -41,11 +41,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          printenv
           make test
-          printenv
-        env:
-          GITHUB_ACTIONS: true
 
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

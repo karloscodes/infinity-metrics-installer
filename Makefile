@@ -68,16 +68,16 @@ release: build-all
 	sha256sum release/*.tar.gz > release/checksums.txt
 
 multipass:
-	@if [ -n "$(GITHUB_ACTIONS)" ]; then \
-		echo "This target is only meant to be run in GitHub Actions"; \
-		exit 0; \
-	fi
- 
-ifndef MULTIPASS_INSTALLED
-	@echo "Multipass not found. Installing..."
-	@$(INSTALL_MULTIPASS)
+ifeq ($(origin GITHUB_RUN_NUMBER), environment)
+	@echo "Skipping Multipass installation in GitHub Actions"
 else
-	@echo "Multipass is already installed."
+	@echo "Checking for Multipass..."
+	@if command -v multipass >/dev/null 2>&1; then \
+		echo "Multipass is already installed."; \
+	else \
+		echo "Multipass not found. Installing..."; \
+		$(INSTALL_MULTIPASS); \
+	fi
 endif
 
 build-linux:

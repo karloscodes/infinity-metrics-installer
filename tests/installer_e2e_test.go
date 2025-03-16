@@ -35,7 +35,7 @@ func TestInstallation(t *testing.T) {
 	assert.FileExists(t, binaryPath, "Binary should exist")
 
 	// Check if running in GitHub Actions
-	inGitHubActions := os.Getenv("GITHUB_ACTIONS") == "true"
+	inGitHubActions := os.Getenv("GITHUB_RUN_NUMBER") != ""
 	var cmd *exec.Cmd
 
 	if inGitHubActions {
