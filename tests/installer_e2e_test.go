@@ -2,6 +2,8 @@ package tests
 
 import (
 	"bytes"
+	"crypto/tls"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,9 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestVMInstallation(t *testing.T) {
+func TestInstallation(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping VM-based test in short mode")
+		t.Skip("Skipping integration test in short mode")
 	}
 
 	// Detect project root
@@ -32,22 +34,33 @@ func TestVMInstallation(t *testing.T) {
 	// Check if the binary exists
 	assert.FileExists(t, binaryPath, "Binary should exist")
 
-	// Path to the run_in_vm.sh script
-	vmScriptPath := filepath.Join(projectRoot, "tests", "run_in_vm.sh")
-	assert.FileExists(t, vmScriptPath, "VM script should exist")
+	// Check if running in GitHub Actions
+	inGitHubActions := os.Getenv("GITHUB_ACTIONS") == "true"
+	var cmd *exec.Cmd
 
-	// Run the script with the install command
-	cmd := exec.Command(vmScriptPath, "--binary="+binaryPath, "--args=install", "--keep-vm")
-	cmd.Env = append(os.Environ(), "DEBUG=1") // Enable debug output in script
+	if inGitHubActions {
+		// Run directly in GitHub Actions without VM
+		t.Log("Running installer directly (GitHub Actions detected)")
+		cmd = exec.Command(binaryPath, "install")
+		// Provide input for CollectFromUser: Domain, AdminEmail, LicenseKey
+		cmd.Stdin = bytes.NewBufferString("localhost\nadmin@localhost\nTEST-LICENSE-KEY\n")
+	} else {
+		// Use VM-based script locally
+		t.Log("Running VM-based installation (not in GitHub Actions)")
+		vmScriptPath := filepath.Join(projectRoot, "tests", "run_in_vm.sh")
+		assert.FileExists(t, vmScriptPath, "VM script should exist")
+		cmd = exec.Command(vmScriptPath, "--binary="+binaryPath, "--args=install", "--keep-vm")
+		cmd.Env = append(os.Environ(), "DEBUG=1", "LICENSE_KEY=TEST-LICENSE-KEY")
+	}
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	t.Log("Starting VM installation test...")
+	t.Log("Starting installation test...")
 	err = cmd.Start()
-	assert.NoError(t, err, "Failed to start VM installation script")
+	assert.NoError(t, err, "Failed to start installation")
 
 	// Wait for completion with a timeout
 	done := make(chan error, 1)
@@ -55,18 +68,22 @@ func TestVMInstallation(t *testing.T) {
 		done <- cmd.Wait()
 	}()
 
+	timeout := 2 * time.Minute
+	if inGitHubActions {
+		timeout = 5 * time.Minute // Longer timeout for CI with Docker setup
+	}
 	select {
 	case err = <-done:
 		if err != nil {
-			t.Logf("Script stdout:\n%s", stdout.String())
-			t.Logf("Script stderr:\n%s", stderr.String())
-			assert.NoError(t, err, "VM installation script should run successfully")
+			t.Logf("Command stdout:\n%s", stdout.String())
+			t.Logf("Command stderr:\n%s", stderr.String())
+			assert.NoError(t, err, "Installation should run successfully")
 		}
-	case <-time.After(2 * time.Minute):
+	case <-time.After(timeout):
 		cmd.Process.Kill()
-		t.Logf("Script stdout:\n%s", stdout.String())
-		t.Logf("Script stderr:\n%s", stderr.String())
-		t.Fatalf("VM installation script timed out after 10 minutes")
+		t.Logf("Command stdout:\n%s", stdout.String())
+		t.Logf("Command stderr:\n%s", stderr.String())
+		t.Fatalf("Installation timed out after %v", timeout)
 	}
 
 	// Log the captured output
@@ -79,59 +96,38 @@ func TestVMInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// // Assert installer completed without errors
+	// Assert installer completed without errors
 	assert.NotContains(t, outputStr, "[ERROR]", "Installer should not return errors")
 	assert.Contains(t, outputStr, "Installation completed successfully", "Installation should complete")
 
-	// t.Log("Testing HTTPS access with retries...")
+	// Test service access (only in GitHub Actions)
+	if inGitHubActions {
+		t.Log("Testing HTTPS access with retries...")
+		url := "https://localhost:8443"
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
 
-	// var curlSuccess bool
-	// var lastStdout, lastStderr string
+		var resp *http.Response
+		for i := 0; i < 12; i++ { // 12 * 5s = 60s
+			resp, err = client.Get(url)
+			if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound) {
+				break
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+			t.Logf("Waiting for service to respond (attempt %d/12)...", i+1)
+			time.Sleep(5 * time.Second)
+		}
 
-	// // Try up to 10 times with exponential backoff
-	// for attempt := 1; attempt <= 5; attempt++ {
-	// 	t.Logf("Curl attempt %d of 5", attempt)
-
-	// 	domainCheckCmd := exec.Command("multipass", "exec", "infinity-test-vm", "--", "curl", "-k", "-s", "-v",
-	// 		"https://localhost")
-
-	// 	stdout.Reset()
-	// 	stderr.Reset()
-	// 	domainCheckCmd.Stdout = &stdout
-	// 	domainCheckCmd.Stderr = &stderr
-
-	// 	err = domainCheckCmd.Run()
-	// 	lastStdout = stdout.String()
-	// 	lastStderr = stderr.String()
-
-	// 	if err == nil && (strings.Contains(lastStdout, "HTTP/2 302") || strings.Contains(lastStderr, "HTTP/2 302")) {
-	// 		t.Logf("Curl succeeded on attempt %d", attempt)
-	// 		curlSuccess = true
-	// 		break
-	// 	}
-
-	// 	// Log the failure and wait before retry
-	// 	t.Logf("Curl attempt %d failed. Stdout: %s", attempt, lastStdout)
-	// 	t.Logf("Stderr: %s", lastStderr)
-
-	// 	// Exponential backoff - wait longer between successive attempts
-	// 	waitTime := time.Duration(math.Pow(2, float64(attempt-1))) * time.Second
-	// 	if waitTime > 30*time.Second {
-	// 		waitTime = 30 * time.Second // Cap at 30 seconds
-	// 	}
-
-	// 	t.Logf("Waiting %v before next attempt", waitTime)
-	// 	time.Sleep(waitTime)
-	// }
-
-	// // Final assertion
-	// if !curlSuccess {
-	// 	t.Logf("All curl attempts failed. Last stdout: %s", lastStdout)
-	// 	t.Logf("Last stderr: %s", lastStderr)
-	// 	assert.Fail(t, "Failed to curl the configured domain after 5 attempts")
-	// } else {
-	// 	assert.True(t, curlSuccess, "Service should be accessible via HTTPS")
-	// 	assert.True(t, strings.Contains(lastStdout, "HTTP/2 302") || strings.Contains(lastStderr, "HTTP/2 302"),
-	// 		"Service should return HTTP/2 302 status code")
-	// }
+		assert.NoError(t, err, "HTTPS request to service should succeed")
+		assert.NotNil(t, resp, "HTTPS response should not be nil")
+		defer resp.Body.Close()
+		assert.Contains(t, []int{http.StatusOK, http.StatusFound}, resp.StatusCode, "Service should return 200 OK or 302 Found")
+		t.Logf("Successfully pinged service at %s, got %d", url, resp.StatusCode)
+	}
 }
