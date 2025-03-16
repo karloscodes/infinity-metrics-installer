@@ -41,7 +41,9 @@ jobs:
 
       - name: Run integration tests
         run: |
+          printenv
           make test
+          printenv
         env:
           GITHUB_ACTIONS: true
 
