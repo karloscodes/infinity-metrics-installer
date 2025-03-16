@@ -76,9 +76,13 @@ endif
 
 build-linux:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
-	chmod +x $(BINARY_DIR)/$(BINARY_NAME)
-	file $(BINARY_DIR)/$(BINARY_NAME)
+	VERSION=$$(cat .version | tr -d '\n') && \
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$$VERSION" -o $(BINARY_DIR)/$(BINARY_NAME)-v$$VERSION-amd64 $(MAIN_PATH)
+	VERSION=$$(cat .version | tr -d '\n') && \
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$$VERSION" -o $(BINARY_DIR)/$(BINARY_NAME)-v$$VERSION-arm64 $(MAIN_PATH)
+	chmod +x $(BINARY_DIR)/$(BINARY_NAME)-v*
+	file $(BINARY_DIR)/$(BINARY_NAME)-v*-amd64
+	file $(BINARY_DIR)/$(BINARY_NAME)-v*-arm64
 
 integration-tests: clean build-linux multipass
 	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"

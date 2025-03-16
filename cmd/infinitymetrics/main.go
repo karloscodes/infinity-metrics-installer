@@ -11,8 +11,7 @@ import (
 	"infinity-metrics-installer/internal/updater"
 )
 
-const currentInstallerVersion = "1.0.0" // Update per release
-
+var currentInstallerVersion string = "dev" // Default value, overridden by -ldflags at build time
 func main() {
 	startTime := time.Now()
 

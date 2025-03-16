@@ -6,23 +6,27 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 
 	"infinity-metrics-installer/internal/logging"
 )
+
+// GithubRepo is the centralized GitHub repository URL slug
+const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
 	Domain           string // Local: User-provided
 	AdminEmail       string // Local: User-provided
 	LicenseKey       string // Local: User-provided
-	AppImage         string // Server/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage       string // Server/Default: e.g., "caddy:2.7-alpine"
+	AppImage         string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage       string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
 	InstallDir       string // Default: e.g., "/opt/infinity-metrics"
 	BackupPath       string // Default: SQLite backup location
-	ConfigVersion    string // Local/Server: Tracks applied config version
-	InstallerVersion string // Server: Version of the infinity-metrics binary
-	InstallerURL     string // Server: Base URL to download new infinity-metrics binary
+	ConfigVersion    string // GitHub Release: Tracks applied config version
+	InstallerVersion string // GitHub Release: Version of the infinity-metrics binary
+	InstallerURL     string // GitHub Release: URL to download new infinity-metrics binary
 }
 
 // Config manages configuration
@@ -45,7 +49,7 @@ func NewConfig(logger *logging.Logger) *Config {
 			BackupPath:       "/opt/infinity-metrics/storage/backups",
 			ConfigVersion:    "0.0.0",
 			InstallerVersion: "0.0.0",
-			InstallerURL:     "https://getinfinitymetrics.com/infinity-metrics",
+			InstallerURL:     fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo), // Default base URL
 		},
 	}
 }
@@ -149,57 +153,105 @@ func (c *Config) SaveToFile(filename string) error {
 	return nil
 }
 
-// FetchFromServer updates from config server with fallback to defaults
-func (c *Config) FetchFromServer(url string) error {
-	c.logger.Info("Fetching configuration from %s", url)
+// FetchFromServer fetches config from the latest GitHub release
+func (c *Config) FetchFromServer(_ string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GithubRepo)
+	c.logger.Info("Fetching latest release from GitHub: %s", url)
+
 	resp, err := http.Get(url)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		c.logger.Warn("Failed to fetch config from server: %v", err)
+		c.logger.Warn("Failed to fetch latest release: %v", err)
 		if resp != nil {
-			c.logger.Warn("Server returned status: %s", resp.Status)
+			c.logger.Warn("GitHub API returned status: %s", resp.Status)
 		}
 		c.logger.Info("Falling back to hardcoded default configuration")
-		// Use defaults already set in NewConfig, no need to modify data
 		return nil
 	}
 	defer resp.Body.Close()
 
-	var serverData struct {
-		AppImage         string `json:"app_image"`
-		CaddyImage       string `json:"caddy_image"`
-		ConfigVersion    string `json:"config_version"`
-		InstallerVersion string `json:"installer_version"`
-		InstallerURL     string `json:"installer_url"`
+	var release struct {
+		TagName string `json:"tag_name"` // e.g., "v1.0.0"
+		Assets  []struct {
+			Name        string `json:"name"`
+			DownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
-		c.logger.Warn("Failed to decode server config: %v", err)
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		c.logger.Warn("Failed to decode GitHub release data: %v", err)
 		c.logger.Info("Falling back to hardcoded default configuration")
 		return nil
 	}
 
-	if serverData.ConfigVersion == "" {
-		c.logger.Warn("config_version missing from server config, falling back to defaults")
+	// Extract version from tag_name (e.g., "v1.0.0" -> "1.0.0")
+	version := strings.TrimPrefix(release.TagName, "v")
+	if version == "" {
+		c.logger.Warn("No valid version found in release tag: %s", release.TagName)
+		c.logger.Info("Falling back to hardcoded default configuration")
 		return nil
 	}
 
-	// Update fields only if provided by the server
+	// Find config.json and binary URLs
+	var configURL string
+	binaryName := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
+	var binaryURL string
+
+	for _, asset := range release.Assets {
+		switch asset.Name {
+		case "config.json":
+			configURL = asset.DownloadURL
+		case binaryName:
+			binaryURL = asset.DownloadURL
+		}
+	}
+
+	// Fetch config.json if available
+	if configURL != "" {
+		if err := c.fetchConfigJSON(configURL); err != nil {
+			c.logger.Warn("Failed to fetch config.json from %s: %v", configURL, err)
+		}
+	} else {
+		c.logger.Warn("config.json not found in latest release assets")
+	}
+
+	// Update fields from release
+	c.data.ConfigVersion = version
+	c.data.InstallerVersion = version
+	if binaryURL != "" {
+		c.data.InstallerURL = binaryURL
+	} else {
+		c.logger.Warn("Binary %s not found in latest release, keeping default URL", binaryName)
+	}
+
+	c.logger.Success("Fetched configuration from GitHub release %s", release.TagName)
+	return nil
+}
+
+// fetchConfigJSON fetches and applies config.json from a URL
+func (c *Config) fetchConfigJSON(url string) error {
+	c.logger.Info("Fetching config.json from %s", url)
+	resp, err := http.Get(url)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch config.json: %v, status: %s", err, resp.Status)
+	}
+	defer resp.Body.Close()
+
+	var serverData struct {
+		AppImage   string `json:"app_image"`
+		CaddyImage string `json:"caddy_image"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
+		return fmt.Errorf("failed to decode config.json: %w", err)
+	}
+
+	// Update fields only if provided
 	if serverData.AppImage != "" {
 		c.data.AppImage = serverData.AppImage
 	}
 	if serverData.CaddyImage != "" {
 		c.data.CaddyImage = serverData.CaddyImage
 	}
-	if serverData.ConfigVersion != "" {
-		c.data.ConfigVersion = serverData.ConfigVersion
-	}
-	if serverData.InstallerVersion != "" {
-		c.data.InstallerVersion = serverData.InstallerVersion
-	}
-	if serverData.InstallerURL != "" {
-		c.data.InstallerURL = serverData.InstallerURL
-	}
 
-	c.logger.Success("Server config fetched, applied version %s", c.data.ConfigVersion)
+	c.logger.Success("Applied config.json from release")
 	return nil
 }
 

@@ -24,6 +24,14 @@ jobs:
         run: |
           make deps
 
+      - name: Set up Docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo systemctl start docker
+          sudo usermod -aG docker $USER
+          newgrp docker
+
       - name: Read version from .version
         id: version
         run: |
@@ -32,10 +40,7 @@ jobs:
 
       - name: Build binaries for AMD64 and ARM64 with version
         run: |
-          mkdir -p bin
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infinity-metrics-${{ env.VERSION }}-amd64 cmd/infinitymetrics/main.go
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/infinity-metrics-${{ env.VERSION }}-arm64 cmd/infinitymetrics/main.go
-          chmod +x bin/infinity-metrics-${{ env.VERSION }}-amd64 bin/infinity-metrics-${{ env.VERSION }}-arm64
+          make build-linux
 
       - name: Verify config/config.json exists
         run: |
@@ -46,7 +51,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          # Provide input for CollectFromUser
+          # Run make test with versioned binary and keep VM for debugging on failure
           make test
 
       - name: Create GitHub Release (on push to main)
@@ -56,10 +61,10 @@ jobs:
         run: |
           TAG="v${{ env.VERSION }}"
           gh release create "$TAG" \
-            bin/infinity-metrics-${{ env.VERSION }}-amd64 \
-            bin/infinity-metrics-${{ env.VERSION }}-arm64 \
+            bin/infinity-metrics-v${{ env.VERSION }}-amd64 \
+            bin/infinity-metrics-v${{ env.VERSION }}-arm64 \
             config/config.json \
-            --title "Release ${{ env.VERSION }}" \
+            --title "Release v${{ env.VERSION }}" \
             --notes "Automated release with binaries and config.json for version ${{ env.VERSION }}" \
             --draft=false
         shell: bash

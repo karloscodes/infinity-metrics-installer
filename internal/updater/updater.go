@@ -32,32 +32,41 @@ func NewUpdater(logger *logging.Logger) *Updater {
 	}
 }
 
-// Update runs the update process
+// Run executes the update process
 func (u *Updater) Run(currentVersion string) error {
 	data := u.config.GetData()
 	envFile := filepath.Join(data.InstallDir, ".env")
 
+	// Load existing config
 	if err := u.config.LoadFromFile(envFile); err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if err := u.config.FetchFromServer("https://getinfinitymetrics.com/config.json"); err != nil {
+
+	// Fetch latest config from GitHub release
+	if err := u.config.FetchFromServer(""); err != nil {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	// Download new binary on every update
-	arch := runtime.GOARCH // "amd64" or "arm64"
-	if arch != "amd64" && arch != "arm64" {
-		return fmt.Errorf("unsupported architecture: %s", arch)
-	}
-	if data.InstallerURL != "" {
-		if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
-			u.logger.Warn("Failed to update binary: %v", err)
-		} else {
-			u.logger.Success("Binary updated to version %s, restarting", data.InstallerVersion)
-			return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
+	// Check if update is needed
+	if data.InstallerVersion == currentVersion {
+		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, data.InstallerVersion)
+	} else {
+		arch := runtime.GOARCH
+		if arch != "amd64" && arch != "arm64" {
+			return fmt.Errorf("unsupported architecture: %s", arch)
+		}
+		if data.InstallerURL != "" && data.InstallerURL != fmt.Sprintf("https://github.com/%s/releases/latest", config.GithubRepo) {
+			if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
+				u.logger.Warn("Failed to update binary: %v", err)
+			} else {
+				u.logger.Success("Binary updated to version %s, restarting", data.InstallerVersion)
+				// Restart with the new binary
+				return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
+			}
 		}
 	}
 
+	// Proceed with Docker and config updates
 	if err := u.update(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
@@ -69,6 +78,7 @@ func (u *Updater) Run(currentVersion string) error {
 	return nil
 }
 
+// update applies Docker and config updates
 func (u *Updater) update() error {
 	totalSteps := 4
 
@@ -86,7 +96,7 @@ func (u *Updater) update() error {
 	}
 
 	u.logger.Step(3, totalSteps, "Checking for updates from server")
-	if err := u.config.FetchFromServer("https://getinfinitymetrics.com/config.json"); err != nil {
+	if err := u.config.FetchFromServer(""); err != nil {
 		u.logger.Warn("Server config fetch failed, using local config: %v", err)
 	}
 
@@ -114,13 +124,18 @@ func (u *Updater) update() error {
 	return nil
 }
 
+// updateBinary downloads and updates the installer binary from the GitHub release
 func (u *Updater) updateBinary(url, installDir, arch string) error {
-	downloadURL := fmt.Sprintf("%s-%s", url, arch)
-	resp, err := http.Get(downloadURL)
+	u.logger.Info("Downloading new installer binary from %s", url)
+	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed, status: %s", resp.Status)
+	}
 
 	newBinary := filepath.Join(installDir, "infinity-metrics.new")
 	out, err := os.Create(newBinary)
@@ -143,5 +158,6 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 		return fmt.Errorf("replace binary: %w", err)
 	}
 
+	u.logger.Success("Binary updated successfully")
 	return nil
 }
