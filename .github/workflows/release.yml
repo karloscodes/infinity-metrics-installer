@@ -57,4 +57,72 @@ jobs:
           # Ensure Multipass daemon is running and accessible
           sudo systemctl enable snapd.socket --now
           sudo systemctl start snap.multipass.multipassd.service || true  # Start if not running
-          sleep 5  # Give daemon tim
+          sleep 5  # Give daemon time to initialize
+
+          # Verify Multipass installation as runner user
+          for i in {1..5}; do
+            sudo multipass version && sudo multipass list && break
+            echo "Multipass not ready, retrying ($i/5)..."
+            sleep 5
+          done || (echo "Multipass failed to initialize" && exit 1)
+
+          # Configure Multipass authentication
+          echo "Configuring Multipass authentication..."
+          cat > multipass_config.yaml << EOF
+          local:
+            access-token: github-ci-token
+          EOF
+          sudo mkdir -p /root/.config/multipass/
+          sudo mv multipass_config.yaml /root/.config/multipass/config.yaml
+          sudo multipass authenticate local
+          mkdir -p ~/.config/multipass/
+          sudo cp /root/.config/multipass/* ~/.config/multipass/ 2>/dev/null || true
+          sudo chown -R $(whoami) ~/.config/multipass/
+
+      - name: Verify Multipass installation
+        run: |
+          sudo multipass version
+          sudo multipass list
+
+      - name: Run integration tests
+        env:
+          LICENSE_KEY: "TEST-LICENSE-KEY"
+          ENV: "test"
+          BINARY_PATH: "./bin/infinity-metrics-v${{ env.VERSION }}-amd64"
+        run: |
+          # Run tests with SSH tunnel verification
+          KEEP_VM=1 make test
+          # Debug SSH tunnel
+          sleep 10  # Give tunnel time to establish
+          curl -v -k https://localhost:8443 || echo "Service not reachable; check VM logs"
+
+      - name: Multipass diagnostics (if tests failed)
+        if: failure()
+        run: |
+          sudo multipass list || true
+          sudo multipass info infinity-test-vm || true
+          sudo multipass exec infinity-test-vm -- docker ps -a || true
+          sudo multipass exec infinity-test-vm -- docker logs infinity-caddy || true
+          ls -la ~/.config/multipass/ || true
+          cat tests/run_in_vm.sh || true
+          ls -la bin/ || true
+
+      - name: Cleanup Multipass VMs
+        if: always()
+        run: |
+          sudo multipass delete --all --purge || true
+
+      - name: Create GitHub Release (on push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ env.VERSION }}"
+          gh release create "$TAG" \
+            bin/infinity-metrics-v${{ env.VERSION }}-amd64 \
+            bin/infinity-metrics-v${{ env.VERSION }}-arm64 \
+            config/config.json \
+            --title "Release v${{ env.VERSION }}" \
+            --notes "Automated release with binaries and config.json for version ${{ env.VERSION }}" \
+            --draft=false
+        shell: bash
