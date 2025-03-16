@@ -43,13 +43,6 @@ jobs:
         run: |
           make test
 
-      - name: Diagnostics (if tests failed)
-        if: failure()
-        run: |
-          docker ps -a || true
-          docker logs infinity-caddy || true
-          ls -la bin/ || true
-          cat tests/test.go || true
 
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
