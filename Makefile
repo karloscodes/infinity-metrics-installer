@@ -69,8 +69,8 @@ release: build-all
 
 multipass:
 	@if [ -n "$(GITHUB_ACTIONS)" ]; then \
-		echo "This target is only meant to be run in GitHub Actions";
-		exit 0
+		echo "This target is only meant to be run in GitHub Actions"; \
+		exit 0; \
 	fi
  
 ifndef MULTIPASS_INSTALLED
