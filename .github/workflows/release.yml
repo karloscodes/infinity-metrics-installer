@@ -41,10 +41,43 @@ jobs:
             exit 1
           fi
 
-      - name: Run integration tests
+      - name: Install Multipass
         run: |
-          # Run make test with versioned binary and keep VM for debugging on failure
+          sudo snap install multipass
+          sudo snap refresh multipass
+          sudo snap restart multipass
+          
+      - name: Configure Multipass permissions
+        run: |
+          # Allow GitHub runner user to access multipass
+          sudo usermod -a -G snap_multipass,multipass runner || true
+          sudo chmod -R 755 /var/snap/multipass/common/
+          # Ensure multipass socket is accessible
+          sudo chmod 755 /var/snap/multipass/common/multipass_socket || true
+          # Wait for multipass to be ready
+          sleep 5
+          
+      - name: Verify Multipass is running
+        run: |
+          sudo snap services multipass
+          sudo multipass version
+          sudo multipass list
+
+      - name: Run integration tests
+        env:
+          LICENSE_KEY: "TEST-LICENSE-KEY"
+          ENV: "test"
+        run: |
+          # Use sudo to run multipass commands
+          export MULTIPASS_SUDO=1
+          # Run make test with versioned binary
           make test
+
+      - name: Cleanup Multipass VMs
+        if: always()
+        run: |
+          sudo multipass delete infinity-test-vm --purge || true
+          sudo multipass list
 
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
