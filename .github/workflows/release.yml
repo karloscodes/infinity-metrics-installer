@@ -42,9 +42,9 @@ jobs:
           fi
 
       - name: Set up Multipass
-        uses: multipass/multipass-action@v0.3.0
+        uses: Canonical/multipass-action@v0.2.0
         with:
-          multipass-version: '1.14.0'  # Use a specific version for stability
+          multipass-version: '1.14.0'  # Latest stable version as of now
 
       - name: Verify Multipass installation
         run: |
@@ -52,6 +52,10 @@ jobs:
           multipass list
 
       - name: Run integration tests
+        env:
+          LICENSE_KEY: "TEST-LICENSE-KEY"
+          ENV: "test"
+          BINARY_PATH: "./bin/infinity-metrics-v${{ env.VERSION }}-amd64"
         run: |
           # Ensure Multipass is ready
           for i in {1..5}; do
