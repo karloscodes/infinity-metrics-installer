@@ -12,12 +12,10 @@ import (
 	"infinity-metrics-installer/internal/logging"
 )
 
-// Docker manages Docker operations
 type Docker struct {
 	logger *logging.Logger
 }
 
-// NewDocker creates a Docker manager
 func NewDocker(logger *logging.Logger) *Docker {
 	return &Docker{logger: logger}
 }
@@ -45,11 +43,11 @@ func (d *Docker) EnsureInstalled() error {
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
 	}
-	err = exec.Command("systemctl", "start", "docker").Run()
+	_, err = exec.Command("systemctl", "start", "docker").Run()
 	if err != nil {
 		return fmt.Errorf("start failed: %w", err)
 	}
-	err = exec.Command("systemctl", "enable", "docker").Run()
+	_, err = exec.Command("systemctl", "enable", "docker").Run()
 	if err != nil {
 		return fmt.Errorf("enable failed: %w", err)
 	}
@@ -66,7 +64,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
-	// Create directories
 	for _, dir := range []string{
 		dataDir + "/storage",
 		dataDir + "/logs",
@@ -79,23 +76,24 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Write initial Caddyfile
 	caddyFile := dataDir + "/Caddyfile"
-	if err := os.WriteFile(caddyFile, []byte("localhost:80 {\n  reverse_proxy infinity-app-1:8080\n}"), 0o644); err != nil {
+	caddyContent := d.generateCaddyfile(data, "infinity-app-1")
+	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
 
-	// Pull images
-	d.logger.Info("Pulling %s", data.AppImage)
-	if _, err := d.runCommand("pull", "always", data.AppImage); err != nil {
-		return fmt.Errorf("pull app: %w", err)
-	}
-	d.logger.Info("Pulling %s", data.CaddyImage)
-	if _, err := d.runCommand("pull", data.CaddyImage); err != nil {
-		return fmt.Errorf("pull caddy: %w", err)
+	for _, image := range []string{data.AppImage, data.CaddyImage} {
+		d.logger.Info("Pulling %s", image)
+		for i := 0; i < 3; i++ {
+			if _, err := d.runCommand("pull", image); err == nil {
+				break
+			} else if i == 2 {
+				return fmt.Errorf("pull %s failed after retries: %w", image, err)
+			}
+			time.Sleep(5 * time.Second)
+		}
 	}
 
-	// Start Caddy
 	caddyName := "infinity-caddy"
 	if !d.isRunning(caddyName) {
 		d.stopAndRemove(caddyName)
@@ -108,6 +106,8 @@ func (d *Docker) Deploy(conf *config.Config) error {
 			"-v", dataDir+"/logs:/data/logs",
 			"-e", "DOMAIN="+data.Domain,
 			"-e", "ADMIN_EMAIL="+data.AdminEmail,
+			"-e", "APP_NAME=infinity-app-1",
+			"--memory=256m",
 			"--restart", "unless-stopped",
 			data.CaddyImage,
 		)
@@ -116,7 +116,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Start app
 	return d.deployApp(data, "infinity-app-1")
 }
 
@@ -124,22 +123,22 @@ func (d *Docker) Update(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
-	// Pull new images
-	d.logger.Info("Pulling %s", data.AppImage)
-	if _, err := d.runCommand("pull", data.AppImage); err != nil {
-		return fmt.Errorf("pull app: %w", err)
-	}
-	d.logger.Info("Pulling %s", data.CaddyImage)
-	if _, err := d.runCommand("pull", data.CaddyImage); err != nil {
-		return fmt.Errorf("pull caddy: %w", err)
+	for _, image := range []string{data.AppImage, data.CaddyImage} {
+		d.logger.Info("Pulling %s", image)
+		for i := 0; i < 3; i++ {
+			if _, err := d.runCommand("pull", image); err == nil {
+				break
+			} else if i == 2 {
+				return fmt.Errorf("pull %s failed after retries: %w", image, err)
+			}
+			time.Sleep(5 * time.Second)
+		}
 	}
 
-	// Backup SQLite
 	if err := d.backupSQLite(dataDir, "infinity-app-1"); err != nil {
 		d.logger.Warn("Backup failed, proceeding: %v", err)
 	}
 
-	// Rolling update
 	currentName := "infinity-app-1"
 	newName := "infinity-app-2"
 	if d.isRunning(newName) {
@@ -152,7 +151,6 @@ func (d *Docker) Update(conf *config.Config) error {
 		return fmt.Errorf("start new: %w", err)
 	}
 
-	// Health check
 	for i := 0; i < 10; i++ {
 		if _, err := d.runCommand("exec", newName, "curl", "-f", "http://localhost:8080/_health"); err == nil {
 			break
@@ -165,9 +163,13 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
-	// Update Caddy
-	caddyConfig := fmt.Sprintf("%s:80 {\n  reverse_proxy %s:8080\n}", data.Domain, newName)
-	if err := d.updateCaddyConfig("infinity-caddy", caddyConfig); err != nil {
+	caddyFile := dataDir + "/Caddyfile"
+	caddyContent := d.generateCaddyfile(data, newName)
+	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
+		d.stopAndRemove(newName)
+		return fmt.Errorf("write updated Caddyfile: %w", err)
+	}
+	if err := d.updateCaddyConfig("infinity-caddy", caddyContent); err != nil {
 		d.stopAndRemove(newName)
 		return fmt.Errorf("update caddy: %w", err)
 	}
@@ -188,11 +190,12 @@ func (d *Docker) deployApp(data config.ConfigData, name string) error {
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
 		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
 		"-e", "SERVER_INSTANCE_ID="+name,
+		"--memory=512m",
 		"--restart", "unless-stopped",
 		data.AppImage,
 	)
 	if err != nil {
-		return fmt.Errorf("deploy %s: %w", name, err)
+		return fmt.Errorf("deploy %s: %w", err)
 	}
 	return nil
 }
@@ -203,6 +206,9 @@ func (d *Docker) backupSQLite(dataDir, appName string) error {
 	_, err := d.runCommand("exec", appName, "cp", "/app/storage/infinity-metrics-production.db", backupFile)
 	if err != nil {
 		return fmt.Errorf("backup sqlite: %w", err)
+	}
+	if stat, err := os.Stat(backupFile); err != nil || stat.Size() == 0 {
+		return fmt.Errorf("backup file invalid: %w", err)
 	}
 	d.logger.Info("SQLite backed up to %s", backupFile)
 	return nil
@@ -229,4 +235,83 @@ func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
 func (d *Docker) isRunning(name string) bool {
 	out, err := d.runCommand("ps", "-q", "-f", "name="+name)
 	return err == nil && strings.TrimSpace(out) != ""
+}
+
+func (d *Docker) generateCaddyfile(data config.ConfigData, appName string) string {
+	return fmt.Sprintf(`{
+    admin off
+    email %s
+    log {
+        level INFO
+        output file /data/logs/caddy.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+    }
+    grace_period 30s
+}
+
+%s:80 {
+    redir https://%s{uri} 301
+}
+
+%s:443 {
+    tls %s {
+        protocols tls1.2 tls1.3
+        curves x25519 secp256r1
+        ciphers TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    }
+    encode zstd gzip
+    
+    file_server /assets/* {
+        hide /data /config
+        header Cache-Control "public, max-age=31536000"
+    }
+    
+    reverse_proxy %s:8080 {
+        health_uri /_health
+        health_interval 10s
+        health_timeout 5s
+        health_status 200
+        fail_duration 30s
+        max_fails 2
+        
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {http.request.remote.host}
+        header_up User-Agent {http.request.user_agent}
+        header_up Referer {http.request.referer}
+        header_up Accept-Language {http.request.header.Accept-Language}
+        transport http {
+            read_timeout 10s
+            write_timeout 10s
+            idle_timeout 60s
+        }
+        flush_interval -1
+    }
+    
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "microphone=(), camera=()"
+        -Server
+    }
+    
+    log {
+        output file /data/logs/%s-access.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format json
+    }
+    
+    handle_errors {
+        @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} <= 599
+        respond @5xx "Service temporarily unavailable" 503
+    }
+}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, data.AdminEmail, appName, data.Domain)
 }
