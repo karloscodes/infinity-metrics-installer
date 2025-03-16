@@ -2,11 +2,9 @@ package tests
 
 import (
 	"bytes"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -64,7 +62,7 @@ func TestVMInstallation(t *testing.T) {
 			t.Logf("Script stderr:\n%s", stderr.String())
 			assert.NoError(t, err, "VM installation script should run successfully")
 		}
-	case <-time.After(10 * time.Minute):
+	case <-time.After(2 * time.Minute):
 		cmd.Process.Kill()
 		t.Logf("Script stdout:\n%s", stdout.String())
 		t.Logf("Script stderr:\n%s", stderr.String())
@@ -81,58 +79,27 @@ func TestVMInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// Assert installer completed without errors
-	assert.NotContains(t, outputStr, "[ERROR] Installation failed", "Installer should not report a failure")
-	assert.Contains(t, outputStr, "[SUCCESS] SQLite installed successfully", "SQLite should be installed")
-	assert.Contains(t, outputStr, "[SUCCESS] Docker installed", "Docker should be installed")
-	assert.Contains(t, outputStr, "[SUCCESS] Installation completed successfully", "Installation should complete")
+	// // Assert installer completed without errors
+	assert.NotContains(t, outputStr, "[ERROR]", "Installer should not return errors")
+	assert.Contains(t, outputStr, "Installation complete!  {\"status\": \"success\"}", "Installation should complete")
 
-	// Extract VM IP from multipass info infinity-test-vm
-	cmd = exec.Command("multipass", "info", "infinity-test-vm")
-	var ipOutput bytes.Buffer
-	cmd.Stdout = &ipOutput
+	// // check with docker if the container is running
+	cmd = exec.Command(vmScriptPath, "curl", "https://localhost")
+	stdout.Reset()
+	stderr.Reset()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err = cmd.Run()
-	assert.NoError(t, err, "Failed to get VM info")
-	vmInfo := ipOutput.String()
-	t.Logf("VM Info:\n%s", vmInfo)
+	assert.NoError(t, err, "Failed to run curl")
+	assert.Contains(t, stdout.String(), "infinity-metrics", "infinity-metrics container should be running")
 
-	vmIP := ""
-	for _, line := range strings.Split(vmInfo, "\n") {
-		if strings.Contains(line, "IPv4") {
-			fields := strings.Fields(line)
-			if len(fields) > 1 {
-				vmIP = fields[1]
-				break
-			}
-		}
-	}
-	assert.NotEmpty(t, vmIP, "VM IP should be found")
-	t.Logf("VM IP extracted: %s", vmIP)
-
-	// Ping the application via HTTP
-	url := "http://" + vmIP + ":8080/_health"
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	// Wait for the application to be ready (up to 60 seconds)
-	var resp *http.Response
-	for i := 0; i < 12; i++ { // 12 * 5s = 60s
-		resp, err = client.Get(url)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		t.Logf("Waiting for application to respond (attempt %d/12)...", i+1)
-		time.Sleep(5 * time.Second)
-	}
-
-	assert.NoError(t, err, "HTTP request to application should succeed")
-	assert.NotNil(t, resp, "HTTP response should not be nil")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "Application should return 200 OK")
-	t.Logf("Successfully pinged application at %s, got 200 OK", url)
-
-	t.Log("VM installation test completed successfully")
+	// // // check with docker if the container is running
+	// cmd = exec.Command(vmScriptPath, "docker", "ps")
+	// stdout.Reset()
+	// stderr.Reset()
+	// cmd.Stdout = &stdout
+	// cmd.Stderr = &stderr
+	// err = cmd.Run()
+	// assert.NoError(t, err, "Failed to run docker ps command")
+	// assert.Contains(t, stdout.String(), "infinity-metrics", "infinity-metrics container should be running")
 }

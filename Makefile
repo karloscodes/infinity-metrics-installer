@@ -10,6 +10,7 @@ GOMOD=$(GOCMD) mod
 BINARY_NAME=infinity-metrics
 BINARY_DIR=bin
 MAIN_PATH=cmd/infinitymetrics/main.go
+ARCH ?= arm64
 
 # OS detection for Multipass installation
 UNAME_S := $(shell uname -s)
@@ -25,7 +26,7 @@ endif
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test coverage lint deps help release multipass integration-tests build-linux
+.PHONY: all build clean test coverage lint deps help release multipass e2e-tests build-linux
 
 all: deps test build
 
@@ -46,7 +47,7 @@ clean:
 	rm -rf coverage.out
 
 test:
-	make integration-tests
+	make e2e-tests
 
 coverage:
 	$(GOTEST) -v -coverprofile=coverage.out ./...
@@ -84,8 +85,15 @@ build-linux:
 	file $(BINARY_DIR)/$(BINARY_NAME)-v*-amd64
 	file $(BINARY_DIR)/$(BINARY_NAME)-v*-arm64
 
-integration-tests: clean build-linux multipass
+e2e-tests: clean build-linux multipass
+	@if [ "$(ARCH)" = "arm64" ]; then \
+		mv $(BINARY_DIR)/$(BINARY_NAME)-v*-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
+	else \
+		mv $(BINARY_DIR)/$(BINARY_NAME)-v*-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
+	fi
+	
 	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"
+	
 	@if [ "$(KEEP_VM)" = "1" ]; then \
 		echo "Keeping VM after tests"; \
 		BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
@@ -109,5 +117,5 @@ help:
 	@echo "  make lint         : Run linting"
 	@echo "  make deps         : Install dependencies"
 	@echo "  make release      : Create release packages"
-	@echo "  make integration-tests : Run integration tests"
+	@echo "  make e2e-tests : Run integration tests"
 	@echo "  make help         : Show this help message"

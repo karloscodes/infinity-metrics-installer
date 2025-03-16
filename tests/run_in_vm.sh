@@ -126,9 +126,9 @@ echo "Running infinity-metrics $COMMAND with 300-second timeout..."
 set +e
 if [ "$COMMAND" = "install" ]; then
   # Pipe input for CollectFromUser: Domain, AdminEmail, LicenseKey
-  COMMAND_OUTPUT=$(echo -e "test.infinitymetrics.local\nadmin@infinitymetrics.local\nTEST-LICENSE-KEY" | multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
+  COMMAND_OUTPUT=$(echo -e "test.infinitymetrics.local\nadmin@infinitymetrics.local\n${LICENSE_KEY}" | multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
 else
-  COMMAND_OUTPUT=$(multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
+  COMMAND_OUTPUT=$(multipass exec "$VM_NAME" -- timeout 60s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
 fi
 COMMAND_EXIT_CODE=$?
 set -e
@@ -147,7 +147,7 @@ if [ "$COMMAND" = "install" ] || [ "$COMMAND" = "update" ]; then
   multipass exec "$VM_NAME" -- sudo systemctl status docker || echo "Docker service not running"
 
   echo "Checking running containers..."
-  TIMEOUT=300
+  TIMEOUT=120
   START_TIME=$(date +%s)
   while true; do
     CURRENT_TIME=$(date +%s)

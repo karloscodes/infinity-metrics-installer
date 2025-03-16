@@ -1,132 +1,145 @@
-// internal/logging/logger.go
 package logging
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
-	"time"
-)
 
-// Log levels
-const (
-	LevelDebug = iota
-	LevelInfo
-	LevelWarn
-	LevelError
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Config holds logger configuration
 type Config struct {
-	Level    string
-	NoColor  bool
-	Verbose  bool
-	ShowTime bool
+	Level    string // "debug", "info", "warn", "error"
+	NoColor  bool   // Ignored with Zap (handled by encoder)
+	Verbose  bool   // Maps to debug level
+	ShowTime bool   // Always true with Zap
+	LogDir   string // Directory for log files (e.g., "/opt/infinity-metrics/logs")
 }
 
 // Logger provides structured logging functionality
 type Logger struct {
-	level    int
-	noColor  bool
-	verbose  bool
-	showTime bool
+	zapLogger *zap.Logger
 }
 
-// ANSI color codes
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorPurple = "\033[35m"
-	colorCyan   = "\033[36m"
-	colorWhite  = "\033[37m"
-)
-
-// NewLogger creates a new logger instance
+// NewLogger creates a new logger instance with Zap and Lumberjack
 func NewLogger(config Config) *Logger {
-	level := LevelInfo
+	// Map config.Level to Zap levels
+	var level zapcore.Level
 	switch strings.ToLower(config.Level) {
 	case "debug":
-		level = LevelDebug
+		level = zapcore.DebugLevel
 	case "info":
-		level = LevelInfo
+		level = zapcore.InfoLevel
 	case "warn":
-		level = LevelWarn
+		level = zapcore.WarnLevel
 	case "error":
-		level = LevelError
+		level = zapcore.ErrorLevel
+	default:
+		level = zapcore.InfoLevel
+	}
+	if config.Verbose {
+		level = zapcore.DebugLevel
 	}
 
-	return &Logger{
-		level:    level,
-		noColor:  config.NoColor,
-		verbose:  config.Verbose,
-		showTime: config.ShowTime,
+	// Console encoder (human-readable, with colors)
+	consoleEncoder := zapcore.NewConsoleEncoder(zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalColorLevelEncoder, // Colored levels
+		EncodeTime:     zapcore.ISO8601TimeEncoder,       // e.g., "2025-03-16T12:00:00Z"
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	})
+
+	// File encoder (JSON, for structured logging)
+	fileEncoder := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	})
+
+	// Log directory and file
+	logDir := config.LogDir
+	if logDir == "" {
+		logDir = "/opt/infinity-metrics/logs" // Default, adjust if needed
 	}
-}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create log directory %s: %v\n", logDir, err)
+	}
+	logFile := filepath.Join(logDir, "infinity-metrics.log")
 
-// formatMessage formats a log message with optional timestamp
-func (l *Logger) formatMessage(level, color, prefix string, format string, args ...interface{}) string {
-	msg := fmt.Sprintf(format, args...)
-
-	var timeStr string
-	if l.showTime {
-		timeStr = time.Now().Format("15:04:05") + " "
+	// Lumberjack for log rotation
+	lumberjackLogger := &lumberjack.Logger{
+		Filename:   logFile,
+		MaxSize:    10, // MB
+		MaxBackups: 3,  // Number of backup files
+		MaxAge:     28, // Days
+		Compress:   true,
 	}
 
-	if l.noColor {
-		return fmt.Sprintf("%s[%s] %s%s", timeStr, level, prefix, msg)
-	}
+	// Core setup: write to both stdout and file
+	consoleCore := zapcore.NewCore(consoleEncoder, zapcore.Lock(os.Stdout), level)
+	fileCore := zapcore.NewCore(fileEncoder, zapcore.Lock(zapcore.AddSync(lumberjackLogger)), level)
+	core := zapcore.NewTee(consoleCore, fileCore)
 
-	return fmt.Sprintf("%s%s[%s]%s %s%s%s", timeStr, color, level, colorReset, prefix, msg, colorReset)
+	// Create logger
+	zapLogger := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+	return &Logger{zapLogger: zapLogger}
 }
 
 // Debug logs a debug message
 func (l *Logger) Debug(format string, args ...interface{}) {
-	if l.level <= LevelDebug {
-		fmt.Fprintln(os.Stdout, l.formatMessage("DEBUG", colorBlue, "", format, args...))
-	}
+	l.zapLogger.Debug(fmt.Sprintf(format, args...))
 }
 
 // Info logs an informational message
 func (l *Logger) Info(format string, args ...interface{}) {
-	if l.level <= LevelInfo {
-		fmt.Fprintln(os.Stdout, l.formatMessage("INFO", colorCyan, "", format, args...))
-	}
+	l.zapLogger.Info(fmt.Sprintf(format, args...))
 }
 
 // Warn logs a warning message
 func (l *Logger) Warn(format string, args ...interface{}) {
-	if l.level <= LevelWarn {
-		fmt.Fprintln(os.Stderr, l.formatMessage("WARN", colorYellow, "", format, args...))
-	}
+	l.zapLogger.Warn(fmt.Sprintf(format, args...))
 }
 
 // Error logs an error message
 func (l *Logger) Error(format string, args ...interface{}) {
-	if l.level <= LevelError {
-		fmt.Fprintln(os.Stderr, l.formatMessage("ERROR", colorRed, "", format, args...))
-	}
+	l.zapLogger.Error(fmt.Sprintf(format, args...))
 }
 
-// Success logs a success message (always shown)
+// Success logs a success message (mapped to Info level with custom field)
 func (l *Logger) Success(format string, args ...interface{}) {
-	fmt.Fprintln(os.Stdout, l.formatMessage("SUCCESS", colorGreen, "", format, args...))
+	l.zapLogger.Info(fmt.Sprintf(format, args...), zap.String("status", "success"))
 }
 
-// Step logs an installation step
+// Step logs an installation step (mapped to Info level with step fields)
 func (l *Logger) Step(step int, total int, format string, args ...interface{}) {
-	if l.level <= LevelInfo {
-		prefix := fmt.Sprintf("[%d/%d] ", step, total)
-		fmt.Fprintln(os.Stdout, l.formatMessage("STEP", colorPurple, prefix, format, args...))
-	}
+	l.zapLogger.Info(fmt.Sprintf(format, args...), zap.Int("step", step), zap.Int("total", total))
 }
 
-// Progress updates installation progress
+// Progress updates installation progress (mapped to Info level with percent field)
 func (l *Logger) Progress(percent int, format string, args ...interface{}) {
-	if l.level <= LevelInfo {
-		prefix := fmt.Sprintf("[%d%%] ", percent)
-		fmt.Fprintln(os.Stdout, l.formatMessage("PROGRESS", colorPurple, prefix, format, args...))
-	}
+	l.zapLogger.Info(fmt.Sprintf(format, args...), zap.Int("progress", percent))
+}
+
+// Sync flushes any buffered logs (call on shutdown if needed)
+func (l *Logger) Sync() {
+	l.zapLogger.Sync()
 }
