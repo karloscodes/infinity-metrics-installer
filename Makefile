@@ -68,7 +68,7 @@ release: build-all
 	sha256sum release/*.tar.gz > release/checksums.txt
 
 multipass:
-	@if [ -z "$(GITHUB_ACTIONS)" ]; then \
+	@if [ -n "$(GITHUB_ACTIONS)" ]; then \
 		echo "This target is only meant to be run in GitHub Actions";
 		exit 0
 	fi
