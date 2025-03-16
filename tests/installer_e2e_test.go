@@ -22,24 +22,25 @@ func TestVMInstallation(t *testing.T) {
 	projectRoot, err := filepath.Abs("..")
 	assert.NoError(t, err, "Failed to find project root")
 
-	// Get installer binary path
-	installerPath := os.Getenv("BINARY_PATH")
-	if installerPath == "" {
-		installerPath = filepath.Join(projectRoot, "bin", "infinity-metrics-installer")
-		t.Logf("BINARY_PATH not set, using default path: %s", installerPath)
+	// Get binary path
+	binaryPath := os.Getenv("BINARY_PATH")
+	if binaryPath == "" {
+		binaryPath = filepath.Join(projectRoot, "bin", "infinity-metrics")
+		t.Logf("BINARY_PATH not set, using default path: %s", binaryPath)
 	} else {
-		t.Logf("BINARY_PATH set to: %s", installerPath)
+		t.Logf("BINARY_PATH set to: %s", binaryPath)
 	}
 
-	// Check if the binaries exist
-	assert.FileExists(t, installerPath, "Installer binary should exist")
+	// Check if the binary exists
+	assert.FileExists(t, binaryPath, "Binary should exist")
 
 	// Path to the run_in_vm.sh script
 	vmScriptPath := filepath.Join(projectRoot, "tests", "run_in_vm.sh")
 	assert.FileExists(t, vmScriptPath, "VM script should exist")
 
-	// Run the script with both binary paths
-	cmd := exec.Command(vmScriptPath, "--binary="+installerPath, "--updater="+updaterPath, "--keep-vm")
+	// Run the script with the install command
+	cmd := exec.Command(vmScriptPath, "--binary="+binaryPath, "--args=install", "--keep-vm")
+	cmd.Env = append(os.Environ(), "DEBUG=1") // Enable debug output in script
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
@@ -47,7 +48,28 @@ func TestVMInstallation(t *testing.T) {
 	cmd.Stderr = &stderr
 
 	t.Log("Starting VM installation test...")
-	err = cmd.Run()
+	err = cmd.Start()
+	assert.NoError(t, err, "Failed to start VM installation script")
+
+	// Wait for completion with a timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Logf("Script stdout:\n%s", stdout.String())
+			t.Logf("Script stderr:\n%s", stderr.String())
+			assert.NoError(t, err, "VM installation script should run successfully")
+		}
+	case <-time.After(10 * time.Minute):
+		cmd.Process.Kill()
+		t.Logf("Script stdout:\n%s", stdout.String())
+		t.Logf("Script stderr:\n%s", stderr.String())
+		t.Fatalf("VM installation script timed out after 10 minutes")
+	}
 
 	// Log the captured output
 	outputStr := stdout.String()
@@ -59,43 +81,36 @@ func TestVMInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// Assert script ran successfully
-	assert.NoError(t, err, "VM installation script should run successfully")
-
 	// Assert installer completed without errors
-	// assert.NotContains(t, outputStr, "[ERROR] Installation failed", "Installer should not report a failure")
-	// assert.Contains(t, outputStr, "[SUCCESS] Docker installed successfully", "Docker should be installed")
-	// assert.Contains(t, outputStr, "[SUCCESS] Docker Swarm initialized successfully", "Swarm should be initialized")
-	// assert.Contains(t, outputStr, "[SUCCESS] Repository cloned successfully", "Repository should be cloned")
-	// assert.Contains(t, outputStr, "[SUCCESS] Configuration saved successfully", "Configuration should be saved")
+	assert.NotContains(t, outputStr, "[ERROR] Installation failed", "Installer should not report a failure")
+	assert.Contains(t, outputStr, "[SUCCESS] SQLite installed successfully", "SQLite should be installed")
+	assert.Contains(t, outputStr, "[SUCCESS] Docker installed", "Docker should be installed")
+	assert.Contains(t, outputStr, "[SUCCESS] Installation completed successfully", "Installation should complete")
 
 	// Extract VM IP from multipass info infinity-test-vm
-	// Output example:
-	//
-	// Name:           infinity-test-vm
-	// State:          Running
-	// Snapshots:      0
-	// IPv4:           192.168.64.27
-	// Release:        Ubuntu 22.04.5 LTS
-	// Image hash:     46113bedf45e (Ubuntu 22.04 LTS)
-	// CPU(s):         2
-	// Load:           0.52 0.11 0.04
-	// Disk usage:     1.6GiB out of 9.6GiB
-	// Memory usage:   183.3MiB out of 1.9GiB
-	// Mounts:         --
-	// Extract VM IP from multipass info infinity-test-vm
-	cmd = exec.Command("bash", "-c", "multipass info infinity-test-vm | grep IPv4 | awk '{print $2}'")
+	cmd = exec.Command("multipass", "info", "infinity-test-vm")
 	var ipOutput bytes.Buffer
 	cmd.Stdout = &ipOutput
 	err = cmd.Run()
-	assert.NoError(t, err, "Failed to get VM IP")
+	assert.NoError(t, err, "Failed to get VM info")
+	vmInfo := ipOutput.String()
+	t.Logf("VM Info:\n%s", vmInfo)
 
-	vmIP := strings.TrimSpace(ipOutput.String())
+	vmIP := ""
+	for _, line := range strings.Split(vmInfo, "\n") {
+		if strings.Contains(line, "IPv4") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				vmIP = fields[1]
+				break
+			}
+		}
+	}
 	assert.NotEmpty(t, vmIP, "VM IP should be found")
 	t.Logf("VM IP extracted: %s", vmIP)
 
 	// Ping the application via HTTP
-	url := "http://" + vmIP // Adjust port/path if needed (e.g., ":8080/health")
+	url := "http://" + vmIP + ":8080/_health"
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Wait for the application to be ready (up to 60 seconds)

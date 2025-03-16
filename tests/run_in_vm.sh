@@ -2,16 +2,17 @@
 set -e
 
 # Infinity Metrics VM-based Integration Testing Script
-# This script creates a VM, runs the installer, and verifies it works
+# This script creates a VM, runs the infinity-metrics binary with a specified command, and verifies it works
 
 # Default values
-BINARY_PATH="./bin/infinity-metrics-installer"
-UPDATER_PATH=""
+BINARY_PATH="./bin/infinity-metrics"
+COMMAND="install"
 VM_NAME="infinity-test-vm"
 VM_MEMORY="2G"
 VM_DISK="10G"
 VM_CPUS="2"
 KEEP_VM=false
+DEBUG=${DEBUG:-0}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -20,8 +21,8 @@ while [[ $# -gt 0 ]]; do
       BINARY_PATH="${1#*=}"
       shift
       ;;
-    --updater=*)
-      UPDATER_PATH="${1#*=}"
+    --args=*)
+      COMMAND="${1#*=}"
       shift
       ;;
     --vm-name=*)
@@ -51,21 +52,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Check if binaries exist
+# Check if binary exists
 if [ ! -f "$BINARY_PATH" ]; then
-  echo "Error: Installer binary not found at $BINARY_PATH"
-  exit 1
-fi
-if [ -z "$UPDATER_PATH" ] || [ ! -f "$UPDATER_PATH" ]; then
-  echo "Error: Updater binary not specified or not found at $UPDATER_PATH"
+  echo "Error: Binary not found at $BINARY_PATH"
   exit 1
 fi
 
 # Check binary type on host
-echo "Checking local installer binary type:"
+echo "Checking local binary type:"
 file "$BINARY_PATH"
-echo "Checking local updater binary type:"
-file "$UPDATER_PATH"
 
 # Clean up function
 cleanup() {
@@ -76,6 +71,8 @@ cleanup() {
     echo "VM $VM_NAME kept for inspection."
     echo "To access: multipass shell $VM_NAME"
     echo "To delete: multipass delete $VM_NAME --purge"
+    VM_IP=$(multipass info "$VM_NAME" | grep IPv4 | awk '{print $2}' || echo "unknown")
+    echo "VM is running at IP: $VM_IP"
   fi
 }
 
@@ -92,126 +89,91 @@ multipass launch 22.04 --name "$VM_NAME" --memory "$VM_MEMORY" --disk "$VM_DISK"
 
 # Wait for VM to be ready
 echo "Waiting for VM to be fully ready..."
-sleep 30
-VM_STATE=$(multipass info "$VM_NAME" | grep State | awk '{print $2}')
-if [ "$VM_STATE" != "Running" ]; then
-  echo "Error: VM is not in Running state: $VM_STATE"
-  exit 1
-fi
+for i in {1..30}; do
+  VM_STATE=$(multipass info "$VM_NAME" | grep State | awk '{print $2}' || echo "Unknown")
+  if [ "$VM_STATE" = "Running" ]; then
+    echo "VM is running after $i seconds"
+    break
+  fi
+  if [ $i -eq 30 ]; then
+    echo "Error: VM did not reach Running state after 30 seconds: $VM_STATE"
+    exit 1
+  fi
+  sleep 1
+done
 
-# Copy binaries to VM
-echo "Copying installer binary to VM..."
-multipass transfer "$BINARY_PATH" "$VM_NAME:/home/ubuntu/infinity-metrics-installer"
-echo "Copying updater binary to VM..."
-multipass transfer "$UPDATER_PATH" "$VM_NAME:/home/ubuntu/infinity-metrics-updater"
+# Copy binary to VM
+echo "Copying binary to VM..."
+multipass transfer "$BINARY_PATH" "$VM_NAME:/home/ubuntu/infinity-metrics"
 
-# Verify file transfers
-echo "Verifying installer file transfer..."
+# Verify file transfer
+echo "Verifying file transfer..."
 ORIG_SIZE=$(stat -c %s "$BINARY_PATH" 2>/dev/null || stat -f %z "$BINARY_PATH")
-VM_SIZE=$(multipass exec "$VM_NAME" -- stat -c %s /home/ubuntu/infinity-metrics-installer)
-echo "Original installer size: $ORIG_SIZE bytes, VM file size: $VM_SIZE bytes"
+VM_SIZE=$(multipass exec "$VM_NAME" -- stat -c %s /home/ubuntu/infinity-metrics || echo "0")
+echo "Original size: $ORIG_SIZE bytes, VM file size: $VM_SIZE bytes"
 if [ "$ORIG_SIZE" -ne "$VM_SIZE" ]; then
-  echo "Error: Installer file size mismatch after transfer"
-  exit 1
-fi
-echo "Verifying updater file transfer..."
-ORIG_UPDATER_SIZE=$(stat -c %s "$UPDATER_PATH" 2>/dev/null || stat -f %z "$UPDATER_PATH")
-VM_UPDATER_SIZE=$(multipass exec "$VM_NAME" -- stat -c %s /home/ubuntu/infinity-metrics-updater)
-echo "Original updater size: $ORIG_UPDATER_SIZE bytes, VM file size: $VM_UPDATER_SIZE bytes"
-if [ "$ORIG_UPDATER_SIZE" -ne "$VM_UPDATER_SIZE" ]; then
-  echo "Error: Updater file size mismatch after transfer"
+  echo "Error: File size mismatch after transfer"
   exit 1
 fi
 
-# Make binaries executable
-echo "Making installer executable..."
-multipass exec "$VM_NAME" -- chmod +x /home/ubuntu/infinity-metrics-installer
-echo "Making updater executable..."
-multipass exec "$VM_NAME" -- chmod +x /home/ubuntu/infinity-metrics-updater
+# Make binary executable and move to system location
+echo "Making binary executable and installing..."
+multipass exec "$VM_NAME" -- chmod +x /home/ubuntu/infinity-metrics
+multipass exec "$VM_NAME" -- sudo mv /home/ubuntu/infinity-metrics /usr/local/bin/infinity-metrics
 
-# Create and copy test config file
-echo "Creating test configuration..."
-cat > test_config.env << EOF
-DOMAIN=test.infinitymetrics.local
-ADMIN_EMAIL=admin@infinitymetrics.local
-INFINITY_METRICS_LICENSE_KEY=TEST-LICENSE-KEY
-ENABLE_BACKUPS=false
-DOCKER_REGISTRY=localhost
-TAG=latest
-EOF
-multipass transfer test_config.env "$VM_NAME:/home/ubuntu/test_config.env"
-rm test_config.env
+# Run the binary with the specified command and timeout, providing input for install
+echo "Running infinity-metrics $COMMAND with 300-second timeout..."
+set +e
+if [ "$COMMAND" = "install" ]; then
+  # Pipe input for CollectFromUser: Domain, AdminEmail, LicenseKey
+  COMMAND_OUTPUT=$(echo -e "test.infinitymetrics.local\nadmin@infinitymetrics.local\nTEST-LICENSE-KEY" | multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
+else
+  COMMAND_OUTPUT=$(multipass exec "$VM_NAME" -- timeout 300s sudo /usr/local/bin/infinity-metrics "$COMMAND" 2>&1)
+fi
+COMMAND_EXIT_CODE=$?
+set -e
+echo "$COMMAND_OUTPUT"
 
-# Install binaries
-echo "Copying installer to system location..."
-multipass exec "$VM_NAME" -- sudo cp /home/ubuntu/infinity-metrics-installer /usr/local/bin/infinity-installer
-multipass exec "$VM_NAME" -- sudo chmod +x /usr/local/bin/infinity-installer
-echo "Copying updater to installation directory..."
-multipass exec "$VM_NAME" -- sudo mkdir -p /opt/infinity-metrics
-multipass exec "$VM_NAME" -- sudo cp /home/ubuntu/infinity-metrics-updater /opt/infinity-metrics/infinity-metrics-updater
-multipass exec "$VM_NAME" -- sudo chmod +x /opt/infinity-metrics/infinity-metrics-updater
-
-# Run installer with timeout and capture output
-echo "Running installer with 120-second timeout..."
-set +e # Temporarily disable set -e
-INSTALLER_OUTPUT=$(multipass exec "$VM_NAME" -- timeout 120s sudo /usr/local/bin/infinity-installer --config /home/ubuntu/test_config.env 2>&1)
-INSTALLER_EXIT_CODE=$?
-set -e # Re-enable set -e
-echo "$INSTALLER_OUTPUT" # Print installer output
-
-if [ $INSTALLER_EXIT_CODE -ne 0 ]; then
-  echo "Error: Installer failed with exit code $INSTALLER_EXIT_CODE"
+if [ $COMMAND_EXIT_CODE -ne 0 ]; then
+  echo "Error: infinity-metrics $COMMAND failed with exit code $COMMAND_EXIT_CODE"
   multipass exec "$VM_NAME" -- cat /var/log/syslog | tail -n 50
   exit 1
 fi
 
-# Verify installation with command outputs
-echo "Checking Docker installation..."
-multipass exec "$VM_NAME" -- docker --version
-multipass exec "$VM_NAME" -- sudo systemctl status docker
+# Verify installation/update
+if [ "$COMMAND" = "install" ] || [ "$COMMAND" = "update" ]; then
+  echo "Checking Docker installation..."
+  multipass exec "$VM_NAME" -- docker --version || echo "Docker not installed"
+  multipass exec "$VM_NAME" -- sudo systemctl status docker || echo "Docker service not running"
 
-echo "Checking Docker Swarm status..."
-multipass exec "$VM_NAME" -- docker info
-multipass exec "$VM_NAME" -- docker node ls
+  echo "Checking running containers..."
+  TIMEOUT=300
+  START_TIME=$(date +%s)
+  while true; do
+    CURRENT_TIME=$(date +%s)
+    ELAPSED=$((CURRENT_TIME - START_TIME))
+    echo "Elapsed time waiting for containers: $ELAPSED seconds"
 
-echo "Checking Infinity Metrics stack deployment..."
-multipass exec "$VM_NAME" -- docker stack ls
-multipass exec "$VM_NAME" -- docker stack ps infinity-metrics
+    if [ $ELAPSED -gt $TIMEOUT ]; then
+      echo "Error: Timeout waiting for containers after $TIMEOUT seconds"
+      multipass exec "$VM_NAME" -- docker ps -a
+      exit 1
+    fi
 
-# Check services with timeout
-echo "Checking service status..."
-TIMEOUT=300
-START_TIME=$(date +%s)
-while true; do
-  CURRENT_TIME=$(date +%s)
-  ELAPSED=$((CURRENT_TIME - START_TIME))
-  echo "Elapsed time waiting for services: $ELAPSED seconds"
-  
-  if [ $ELAPSED -gt $TIMEOUT ]; then
-    echo "Error: Timeout waiting for services to start after $TIMEOUT seconds"
-    multipass exec "$VM_NAME" -- docker service ls
-    multipass exec "$VM_NAME" -- docker ps -a
-    exit 1
-  fi
-  
-  SERVICE_STATUS=$(multipass exec "$VM_NAME" -- docker service ls)
-  echo "Current service status:"
-  echo "$SERVICE_STATUS"
-  
-  if echo "$SERVICE_STATUS" | grep -q "infinity-metrics" && ! echo "$SERVICE_STATUS" | grep -q "0/"; then
-    echo "All services appear to be running!"
-    break
-  else
-    echo "Some services are not fully started yet. Waiting..."
-    sleep 5
-  fi
-done
+    CONTAINER_STATUS=$(multipass exec "$VM_NAME" -- docker ps --format '{{.Names}} {{.Status}}' || echo "No containers")
+    echo "Current container status:"
+    echo "$CONTAINER_STATUS"
 
-# Print VM IP
-if [ "$KEEP_VM" = true ]; then
-  VM_IP=$(multipass info "$VM_NAME" | grep IPv4 | awk '{print $2}')
-  echo "VM is running at IP: $VM_IP"
+    if echo "$CONTAINER_STATUS" | grep -q "infinity-app-1" && echo "$CONTAINER_STATUS" | grep -q "infinity-caddy" && \
+       echo "$CONTAINER_STATUS" | grep "infinity-app-1" | grep -q "Up" && echo "$CONTAINER_STATUS" | grep "infinity-caddy" | grep -q "Up"; then
+      echo "All expected containers are running!"
+      break
+    else
+      echo "Some containers are not fully started yet. Waiting..."
+      sleep 5
+    fi
+  done
 fi
 
-echo "Integration test completed successfully!"
+echo "Integration test for $COMMAND completed successfully!"
 exit 0

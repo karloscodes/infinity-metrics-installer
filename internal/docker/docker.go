@@ -5,22 +5,28 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"infinity-metrics-installer/internal/config"
+	"infinity-metrics-installer/internal/database"
 	"infinity-metrics-installer/internal/logging"
 )
 
 type Docker struct {
 	logger *logging.Logger
+	db     *database.Database
 }
 
-func NewDocker(logger *logging.Logger) *Docker {
-	return &Docker{logger: logger}
+func NewDocker(logger *logging.Logger, db *database.Database) *Docker {
+	return &Docker{
+		logger: logger,
+		db:     db,
+	}
 }
 
-func (d *Docker) runCommand(args ...string) (string, error) {
+func (d *Docker) RunCommand(args ...string) (string, error) {
 	d.logger.Debug("Running docker %s", strings.Join(args, " "))
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("docker", args...)
@@ -33,7 +39,7 @@ func (d *Docker) runCommand(args ...string) (string, error) {
 }
 
 func (d *Docker) EnsureInstalled() error {
-	if _, err := d.runCommand("version"); err == nil {
+	if _, err := d.RunCommand("version"); err == nil {
 		d.logger.Success("Docker is installed")
 		return nil
 	}
@@ -43,16 +49,16 @@ func (d *Docker) EnsureInstalled() error {
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
 	}
-	_, err = exec.Command("systemctl", "start", "docker").Run()
+	err = exec.Command("systemctl", "start", "docker").Run()
 	if err != nil {
 		return fmt.Errorf("start failed: %w", err)
 	}
-	_, err = exec.Command("systemctl", "enable", "docker").Run()
+	err = exec.Command("systemctl", "enable", "docker").Run()
 	if err != nil {
 		return fmt.Errorf("enable failed: %w", err)
 	}
 
-	_, err = d.runCommand("version")
+	_, err = d.RunCommand("version")
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
@@ -77,7 +83,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	}
 
 	caddyFile := dataDir + "/Caddyfile"
-	caddyContent := d.generateCaddyfile(data, "infinity-app-1")
+	caddyContent := d.generateCaddyfile(data, "infinity-app-1", "")
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
@@ -85,7 +91,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s", image)
 		for i := 0; i < 3; i++ {
-			if _, err := d.runCommand("pull", image); err == nil {
+			if _, err := d.RunCommand("pull", image); err == nil {
 				break
 			} else if i == 2 {
 				return fmt.Errorf("pull %s failed after retries: %w", image, err)
@@ -95,9 +101,9 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	}
 
 	caddyName := "infinity-caddy"
-	if !d.isRunning(caddyName) {
-		d.stopAndRemove(caddyName)
-		_, err := d.runCommand("run", "-d",
+	if !d.IsRunning(caddyName) {
+		d.StopAndRemove(caddyName)
+		_, err := d.RunCommand("run", "-d",
 			"--name", caddyName,
 			"-p", "80:80", "-p", "443:443", "-p", "443:443/udp",
 			"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
@@ -116,17 +122,18 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	return d.deployApp(data, "infinity-app-1")
+	return d.DeployApp(data, "infinity-app-1")
 }
 
 func (d *Docker) Update(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
+	// Pull new images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s", image)
 		for i := 0; i < 3; i++ {
-			if _, err := d.runCommand("pull", image); err == nil {
+			if _, err := d.RunCommand("pull", image); err == nil {
 				break
 			} else if i == 2 {
 				return fmt.Errorf("pull %s failed after retries: %w", image, err)
@@ -135,54 +142,84 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
-	if err := d.backupSQLite(dataDir, "infinity-app-1"); err != nil {
-		d.logger.Warn("Backup failed, proceeding: %v", err)
-	}
-
+	// Determine current and new containers
 	currentName := "infinity-app-1"
 	newName := "infinity-app-2"
-	if d.isRunning(newName) {
+	if d.IsRunning(newName) {
 		currentName, newName = newName, currentName
 	}
 
-	d.logger.Info("Starting %s", newName)
-	if err := d.deployApp(data, newName); err != nil {
-		d.stopAndRemove(newName)
-		return fmt.Errorf("start new: %w", err)
+	// Backup SQLite database using database package
+	mainDBPath := filepath.Join(dataDir, "storage", "infinity-metrics-production.db")
+	backupDir := filepath.Join(dataDir, "storage", "backups")
+	if _, err := d.db.BackupDatabase(mainDBPath, backupDir); err != nil {
+		d.logger.Warn("Database backup failed: %v", err)
+		d.logger.Warn("Proceeding with update without backup")
 	}
 
-	for i := 0; i < 10; i++ {
-		if _, err := d.runCommand("exec", newName, "curl", "-f", "http://localhost:8080/_health"); err == nil {
+	// Start new container with retries
+	d.logger.Info("Starting %s", newName)
+	for i := 0; i < 3; i++ {
+		if err := d.DeployApp(data, newName); err == nil {
+			break
+		} else if i == 2 {
+			d.StopAndRemove(newName)
+			return fmt.Errorf("deploy %s failed after retries: %w", newName, err)
+		}
+		d.logger.Warn("Deploy %s failed, retrying (%d/3)", newName, i+1)
+		d.StopAndRemove(newName)
+		time.Sleep(2 * time.Second)
+	}
+
+	// Health check new container
+	for i := 0; i < 5; i++ {
+		if _, err := d.RunCommand("exec", newName, "curl", "-f", "http://localhost:8080/_health"); err == nil {
 			break
 		}
-		time.Sleep(2 * time.Second)
-		if i == 9 {
+		time.Sleep(1 * time.Second)
+		if i == 4 {
 			d.logger.Error("Health check failed for %s", newName)
-			d.stopAndRemove(newName)
-			return fmt.Errorf("new container unhealthy")
+			d.StopAndRemove(newName)
+			return fmt.Errorf("new container %s unhealthy", newName)
 		}
 	}
 
+	// Stage 1: Update Caddyfile with both upstreams
 	caddyFile := dataDir + "/Caddyfile"
-	caddyContent := d.generateCaddyfile(data, newName)
+	caddyContent := d.generateCaddyfile(data, currentName, newName)
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
-		d.stopAndRemove(newName)
-		return fmt.Errorf("write updated Caddyfile: %w", err)
+		d.StopAndRemove(newName)
+		return fmt.Errorf("write transitional Caddyfile: %w", err)
 	}
 	if err := d.updateCaddyConfig("infinity-caddy", caddyContent); err != nil {
-		d.stopAndRemove(newName)
-		return fmt.Errorf("update caddy: %w", err)
+		d.StopAndRemove(newName)
+		return fmt.Errorf("reload caddy with both upstreams: %w", err)
 	}
 
-	d.stopAndRemove(currentName)
-	d.runCommand("image", "prune", "-f")
-	d.logger.Success("Update completed")
+	// Wait for traffic to stabilize
+	time.Sleep(2 * time.Second)
+
+	// Stage 2: Update Caddyfile to only new upstream
+	caddyContent = d.generateCaddyfile(data, newName, "")
+	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
+		d.StopAndRemove(newName)
+		return fmt.Errorf("write final Caddyfile: %w", err)
+	}
+	if err := d.updateCaddyConfig("infinity-caddy", caddyContent); err != nil {
+		d.StopAndRemove(newName)
+		return fmt.Errorf("reload caddy with new upstream: %w", err)
+	}
+
+	// Clean up
+	d.StopAndRemove(currentName)
+	d.RunCommand("image", "prune", "-f")
+	d.logger.Success("Update completed with minimal downtime")
 	return nil
 }
 
-func (d *Docker) deployApp(data config.ConfigData, name string) error {
-	d.stopAndRemove(name)
-	_, err := d.runCommand("run", "-d",
+func (d *Docker) DeployApp(data config.ConfigData, name string) error {
+	d.StopAndRemove(name)
+	_, err := d.RunCommand("run", "-d",
 		"--name", name,
 		"-v", data.InstallDir+"/storage:/app/storage",
 		"-v", data.InstallDir+"/logs:/app/logs",
@@ -195,28 +232,14 @@ func (d *Docker) deployApp(data config.ConfigData, name string) error {
 		data.AppImage,
 	)
 	if err != nil {
-		return fmt.Errorf("deploy %s: %w", err)
+		return fmt.Errorf("deploy %s: %w", name, err)
 	}
 	return nil
 }
 
-func (d *Docker) backupSQLite(dataDir, appName string) error {
-	timestamp := time.Now().Format("20060102150405")
-	backupFile := fmt.Sprintf("%s/backup-%s.db", dataDir+"/storage/backups", timestamp)
-	_, err := d.runCommand("exec", appName, "cp", "/app/storage/infinity-metrics-production.db", backupFile)
-	if err != nil {
-		return fmt.Errorf("backup sqlite: %w", err)
-	}
-	if stat, err := os.Stat(backupFile); err != nil || stat.Size() == 0 {
-		return fmt.Errorf("backup file invalid: %w", err)
-	}
-	d.logger.Info("SQLite backed up to %s", backupFile)
-	return nil
-}
-
-func (d *Docker) stopAndRemove(name string) {
-	d.runCommand("stop", name)
-	d.runCommand("rm", name)
+func (d *Docker) StopAndRemove(name string) {
+	d.RunCommand("stop", name)
+	d.RunCommand("rm", name)
 }
 
 func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
@@ -232,12 +255,16 @@ func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
 	return nil
 }
 
-func (d *Docker) isRunning(name string) bool {
-	out, err := d.runCommand("ps", "-q", "-f", "name="+name)
+func (d *Docker) IsRunning(name string) bool {
+	out, err := d.RunCommand("ps", "-q", "-f", "name="+name)
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-func (d *Docker) generateCaddyfile(data config.ConfigData, appName string) string {
+func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondaryApp string) string {
+	upstreams := primaryApp + ":8080"
+	if secondaryApp != "" {
+		upstreams += " " + secondaryApp + ":8080"
+	}
 	return fmt.Sprintf(`{
     admin off
     email %s
@@ -265,11 +292,10 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, appName string) strin
     encode zstd gzip
     
     file_server /assets/* {
-        hide /data /config
-        header Cache-Control "public, max-age=31536000"
+        precompressed
     }
     
-    reverse_proxy %s:8080 {
+    reverse_proxy %s {
         health_uri /_health
         health_interval 10s
         health_timeout 5s
@@ -282,11 +308,7 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, appName string) strin
         header_up User-Agent {http.request.user_agent}
         header_up Referer {http.request.referer}
         header_up Accept-Language {http.request.header.Accept-Language}
-        transport http {
-            read_timeout 10s
-            write_timeout 10s
-            idle_timeout 60s
-        }
+
         flush_interval -1
     }
     
@@ -313,5 +335,5 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, appName string) strin
         @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} <= 599
         respond @5xx "Service temporarily unavailable" 503
     }
-}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, data.AdminEmail, appName, data.Domain)
+}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, data.AdminEmail, upstreams, data.Domain)
 }

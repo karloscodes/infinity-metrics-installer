@@ -7,9 +7,9 @@ GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
-BINARY_NAME=infinity-metrics-installer
+BINARY_NAME=infinity-metrics
 BINARY_DIR=bin
-MAIN_PATH=cmd/install/main.go
+MAIN_PATH=cmd/infinitymetrics/main.go
 
 # OS detection for Multipass installation
 UNAME_S := $(shell uname -s)
@@ -25,7 +25,7 @@ endif
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test coverage lint deps help release multipass integration-tests
+.PHONY: all build clean test coverage lint deps help release multipass integration-tests build-linux
 
 all: deps test build
 
@@ -77,25 +77,27 @@ endif
 build-linux:
 	mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	chmod +x $(BINARY_DIR)/$(BINARY_NAME)
-	chmod +x $(BINARY_DIR)/$(BINARY_NAME_UPDATER)
 	file $(BINARY_DIR)/$(BINARY_NAME)
-	file $(BINARY_DIR)/$(BINARY_NAME_UPDATER)
 
 integration-tests: clean build-linux multipass
-ifndef KEEP_VM
-	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
-	$(GOTEST) -v ./tests
-else
-	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
-	$(GOTEST) -v -tags keepvm ./tests ; multipass delete infinity-metrics-installer
-endif
+	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"
+	@if [ "$(KEEP_VM)" = "1" ]; then \
+		echo "Keeping VM after tests"; \
+		BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
+		$(GOTEST) -v -tags keepvm ./tests; \
+		echo "VM kept, not deleting infinity-test-vm"; \
+	else \
+		echo "Not keeping VM, will delete after tests"; \
+		BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
+		$(GOTEST) -v ./tests; \
+		multipass delete infinity-test-vm --purge || true; \
+	fi
 
 help:
 	@echo "Available commands:"
 	@echo "  make              : Build the project after running tests"
-	@echo "  make build        : Build the installer and updater binaries"
+	@echo "  make build        : Build the binary"
 	@echo "  make build-all    : Build for multiple platforms"
 	@echo "  make clean        : Clean build files"
 	@echo "  make test         : Run tests"

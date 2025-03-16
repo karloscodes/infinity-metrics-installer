@@ -32,30 +32,49 @@ func main() {
 	inst := installer.NewInstaller(logger)
 
 	// Check command argument
-	if len(os.Args) > 1 && os.Args[1] == "update" {
-		logger.Info("Starting Infinity Metrics Update")
-		logger.Debug("Initializing update environment")
-		if err := inst.Update(currentInstallerVersion); err != nil {
-			logger.Error("Update failed: %v", err)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			logger.Info("Starting Infinity Metrics Installer")
+			logger.Debug("Initializing installation environment")
+			logger.Info("Beginning installation process")
+			if err := inst.Run(); err != nil {
+				logger.Error("Installation failed: %v", err)
+				os.Exit(1)
+			}
+			elapsedTime := time.Since(startTime).Round(time.Second)
+			logger.Success("Installation completed successfully in %s!", elapsedTime)
+			logger.Info("Infinity Metrics is now deployed")
+			data := inst.GetConfig().GetData()
+			logger.Info("Access your dashboard at https://%s", data.Domain)
+
+		case "update":
+			logger.Info("Starting Infinity Metrics Update")
+			logger.Debug("Initializing update environment")
+			if err := inst.Update(currentInstallerVersion); err != nil {
+				logger.Error("Update failed: %v", err)
+				os.Exit(1)
+			}
+			elapsedTime := time.Since(startTime).Round(time.Second)
+			logger.Success("Update completed successfully in %s!", elapsedTime)
+
+		case "restore":
+			logger.Info("Starting Infinity Metrics Restore")
+			if err := inst.Restore(); err != nil {
+				logger.Error("Restore failed: %v", err)
+				os.Exit(1)
+			}
+			elapsedTime := time.Since(startTime).Round(time.Second)
+			logger.Success("Restore completed successfully in %s!", elapsedTime)
+			data := inst.GetConfig().GetData()
+			logger.Info("Infinity Metrics restored, access at https://%s", data.Domain)
+
+		default:
+			logger.Error("Please specify 'install', 'update', or 'restore' as an argument")
 			os.Exit(1)
 		}
-		elapsedTime := time.Since(startTime).Round(time.Second)
-		logger.Success("Update completed successfully in %s!", elapsedTime)
-	} else if len(os.Args) > 1 && os.Args[1] == "install" {
-		logger.Info("Starting Infinity Metrics Installer")
-		logger.Debug("Initializing installation environment")
-		logger.Info("Beginning installation process")
-		if err := inst.Run(); err != nil {
-			logger.Error("Installation failed: %v", err)
-			os.Exit(1)
-		}
-		elapsedTime := time.Since(startTime).Round(time.Second)
-		logger.Success("Installation completed successfully in %s!", elapsedTime)
-		logger.Info("Infinity Metrics is now deployed")
-		data := inst.GetConfig().GetData()
-		logger.Info("Access your dashboard at https://%s", data.Domain)
 	} else {
-		logger.Error("Please specify 'install' or 'update' as an argument")
+		logger.Error("Please specify 'install', 'update', or 'restore' as an argument")
 		os.Exit(1)
 	}
 }
