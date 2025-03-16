@@ -52,10 +52,6 @@ jobs:
           multipass list
 
       - name: Run integration tests
-        env:
-          LICENSE_KEY: "TEST-LICENSE-KEY"
-          ENV: "test"
-          BINARY_PATH: "./bin/infinity-metrics-v${{ env.VERSION }}-amd64"
         run: |
           # Ensure Multipass is ready
           for i in {1..5}; do
