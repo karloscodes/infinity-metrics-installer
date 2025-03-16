@@ -2,9 +2,12 @@ package updater
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/database"
@@ -29,11 +32,48 @@ func NewUpdater(logger *logging.Logger) *Updater {
 	}
 }
 
-func (u *Updater) Run() error {
+// Update runs the update process
+func (u *Updater) Run(currentVersion string) error {
+	data := u.config.GetData()
+	envFile := filepath.Join(data.InstallDir, ".env")
+
+	if err := u.config.LoadFromFile(envFile); err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := u.config.FetchFromServer("https://getinfinitymetrics.com/config.json"); err != nil {
+		u.logger.Warn("Server config fetch failed, using local: %v", err)
+	}
+
+	// Download new binary on every update
+	arch := runtime.GOARCH // "amd64" or "arm64"
+	if arch != "amd64" && arch != "arm64" {
+		return fmt.Errorf("unsupported architecture: %s", arch)
+	}
+	if data.InstallerURL != "" {
+		if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
+			u.logger.Warn("Failed to update binary: %v", err)
+		} else {
+			u.logger.Success("Binary updated to version %s, restarting", data.InstallerVersion)
+			return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
+		}
+	}
+
+	if err := u.update(); err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+	if err := u.config.SaveToFile(envFile); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	u.logger.Success("Update completed")
+	return nil
+}
+
+func (u *Updater) update() error {
 	totalSteps := 4
 
 	u.logger.Step(1, totalSteps, "Ensuring SQLite is installed")
-	if err := u.ensureSQLiteInstalled(); err != nil {
+	if err := u.database.EnsureSQLiteInstalled(); err != nil {
 		u.logger.Warn("SQLite installation failed: %v", err)
 		u.logger.Warn("Proceeding with limited backup capabilities")
 	}
@@ -52,8 +92,8 @@ func (u *Updater) Run() error {
 
 	u.logger.Step(4, totalSteps, "Applying updates")
 	// Create backup before update
-	mainDBPath := u.GetMainDBPath()
-	backupDir := u.GetBackupDir()
+	mainDBPath := u.config.GetMainDBPath()
+	backupDir := u.config.GetData().BackupPath
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {
 		u.logger.Warn("Failed to backup database before update: %v", err)
 		u.logger.Warn("Proceeding with update without backup")
@@ -74,53 +114,34 @@ func (u *Updater) Run() error {
 	return nil
 }
 
-// GetMainDBPath returns the path to the main database file
-func (u *Updater) GetMainDBPath() string {
-	data := u.config.GetData()
-	return filepath.Join(data.InstallDir, "storage", "infinity-metrics-production.db")
-}
+func (u *Updater) updateBinary(url, installDir, arch string) error {
+	downloadURL := fmt.Sprintf("%s-%s", url, arch)
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
 
-// GetBackupDir returns the path to the backup directory
-func (u *Updater) GetBackupDir() string {
-	data := u.config.GetData()
-	return filepath.Join(data.InstallDir, "storage", "backups")
-}
+	newBinary := filepath.Join(installDir, "infinity-metrics.new")
+	out, err := os.Create(newBinary)
+	if err != nil {
+		return fmt.Errorf("create new binary: %w", err)
+	}
+	defer out.Close()
 
-// ensureSQLiteInstalled installs SQLite if not already available
-func (u *Updater) ensureSQLiteInstalled() error {
-	u.logger.Info("Checking for SQLite installation...")
-
-	// Try to run sqlite3 --version to check if it's installed
-	cmd := exec.Command("sqlite3", "--version")
-	if err := cmd.Run(); err == nil {
-		u.logger.Success("SQLite is already installed")
-		return nil
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("write new binary: %w", err)
 	}
 
-	// SQLite is not installed, install it using apt-get (assuming Debian/Ubuntu)
-	u.logger.Info("Installing SQLite...")
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("must run as root to install SQLite")
+	if err := os.Chmod(newBinary, 0o755); err != nil {
+		return fmt.Errorf("chmod new binary: %w", err)
 	}
 
-	// Update package list
-	updateCmd := exec.Command("apt-get", "update", "-y")
-	if err := updateCmd.Run(); err != nil {
-		return fmt.Errorf("failed to update package list: %w", err)
+	// Replace old binary
+	oldBinary := filepath.Join(installDir, "infinity-metrics")
+	if err := os.Rename(newBinary, oldBinary); err != nil {
+		return fmt.Errorf("replace binary: %w", err)
 	}
 
-	// Install sqlite3
-	installCmd := exec.Command("apt-get", "install", "-y", "sqlite3")
-	if err := installCmd.Run(); err != nil {
-		return fmt.Errorf("failed to install SQLite: %w", err)
-	}
-
-	// Verify installation
-	verifyCmd := exec.Command("sqlite3", "--version")
-	if err := verifyCmd.Run(); err != nil {
-		return fmt.Errorf("SQLite installation verification failed: %w", err)
-	}
-
-	u.logger.Success("SQLite installed successfully")
 	return nil
 }

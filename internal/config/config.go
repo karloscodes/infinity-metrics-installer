@@ -208,6 +208,10 @@ func (c *Config) GetData() ConfigData {
 	return c.data
 }
 
+func (c *Config) GetMainDBPath() string {
+	return c.data.InstallDir + "/storage/infinity-metrics-production.db"
+}
+
 // Validate checks required fields
 func (c *Config) Validate() error {
 	if c.data.Domain == "" {

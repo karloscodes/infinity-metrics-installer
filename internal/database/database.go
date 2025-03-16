@@ -33,6 +33,39 @@ func NewDatabase(logger *logging.Logger) *Database {
 	}
 }
 
+// EnsureSQLiteInstalled installs SQLite if not already available
+func (d *Database) EnsureSQLiteInstalled() error {
+	d.logger.Info("Checking for SQLite installation...")
+
+	// Try to run sqlite3 --version to check if it's installed
+	cmd := exec.Command("sqlite3", "--version")
+	if err := cmd.Run(); err == nil {
+		d.logger.Success("SQLite is already installed")
+		return nil
+	}
+
+	// SQLite is not installed, install it using apt-get (assuming Debian/Ubuntu)
+	d.logger.Info("Installing SQLite...")
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("must run as root to install SQLite")
+	}
+
+	// Install sqlite3
+	installCmd := exec.Command("apt-get", "install", "-y", "sqlite3")
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("failed to install SQLite: %w", err)
+	}
+
+	// Verify installation
+	verifyCmd := exec.Command("sqlite3", "--version")
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("SQLite installation verification failed: %w", err)
+	}
+
+	d.logger.Success("SQLite installed successfully")
+	return nil
+}
+
 // BackupDatabase creates a backup of the SQLite database using sqlite3
 func (d *Database) BackupDatabase(dbPath, backupDir string) (string, error) {
 	// Check if the database file exists

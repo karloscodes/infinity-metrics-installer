@@ -1,0 +1,65 @@
+name: Integration Tests and Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          make deps
+
+      - name: Read version from .version
+        id: version
+        run: |
+          VERSION=$(cat .version | tr -d '\n')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build binaries for AMD64 and ARM64 with version
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infinity-metrics-${{ env.VERSION }}-amd64 cmd/infinitymetrics/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/infinity-metrics-${{ env.VERSION }}-arm64 cmd/infinitymetrics/main.go
+          chmod +x bin/infinity-metrics-${{ env.VERSION }}-amd64 bin/infinity-metrics-${{ env.VERSION }}-arm64
+
+      - name: Verify config/config.json exists
+        run: |
+          if [ ! -f config/config.json ]; then
+            echo "Error: config/config.json not found"
+            exit 1
+          fi
+
+      - name: Run integration tests
+        run: |
+          # Provide input for CollectFromUser
+          make test
+
+      - name: Create GitHub Release (on push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ env.VERSION }}"
+          gh release create "$TAG" \
+            bin/infinity-metrics-${{ env.VERSION }}-amd64 \
+            bin/infinity-metrics-${{ env.VERSION }}-arm64 \
+            config/config.json \
+            --title "Release ${{ env.VERSION }}" \
+            --notes "Automated release with binaries and config.json for version ${{ env.VERSION }}" \
+            --draft=false
+        shell: bash

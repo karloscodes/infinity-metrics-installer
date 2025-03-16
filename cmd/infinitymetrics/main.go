@@ -8,6 +8,7 @@ import (
 
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
+	"infinity-metrics-installer/internal/updater"
 )
 
 const currentInstallerVersion = "1.0.0" // Update per release
@@ -75,7 +76,9 @@ func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time
 	logger.Info("Starting Infinity Metrics Update")
 	logger.Debug("Initializing update environment")
 
-	if err := inst.Update(currentInstallerVersion); err != nil {
+	updater := updater.NewUpdater(logger)
+
+	if err := updater.Run(currentInstallerVersion); err != nil {
 		logger.Error("Update failed: %v", err)
 		os.Exit(1)
 	}
