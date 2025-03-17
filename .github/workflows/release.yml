@@ -1,52 +1,68 @@
-name: Release
+name: Infinity Metrics Installer Tests
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
-  test-and-release:
+  installer-tests:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # Required for creating releases
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+      - uses: actions/checkout@v3
+      
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v4
         with:
-          go-version: '1.22'
-
-      - name: Read version from .version
-        id: version
+          go-version: '1.24'
+          
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod tidy
+      
+      - name: Build installer
+        run: make build-linux
+      
+      - name: Prepare binary
+        run: |
+          # Use architecture-specific binary based on runner
+          if [ "$(uname -m)" = "x86_64" ]; then
+            mv bin/infinity-metrics-*-amd64 bin/infinity-metrics
+          else
+            mv bin/infinity-metrics-*-arm64 bin/infinity-metrics
+          fi
+          chmod +x bin/infinity-metrics
+          ls -la bin/
+      
+      - name: Run all installer tests
+        env:
+          BINARY_PATH: ${{ github.workspace }}/bin/infinity-metrics
+          DEBUG: 1
+        run: make test
+      
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "Collecting Docker logs..."
+          docker ps -a
+          for container in $(docker ps -a --format "{{.Names}}"); do
+            echo "========== Logs for $container =========="
+            docker logs $container || true
+          done
+          
+          echo "Collecting service logs..."
+          ls -la /opt/infinity-metrics/logs/ || true
+          cat /opt/infinity-metrics/logs/infinity-metrics.log || true
+          
+      - name: Get version
+        id: get_version
         run: |
           VERSION=$(cat .version | tr -d '\n')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      - name: Build binaries for AMD64 and ARM64 with version
-        run: |
-          make build-linux
-
-      - name: Verify config/config.json exists
-        run: |
-          if [ ! -f config/config.json ]; then
-            echo "Error: config/config.json not found"
-            exit 1
-          fi
-
-      - name: Run integration tests
-        run: |
-          # make test
-          echo "Skip for now"
-
-
+          echo "Version is: $VERSION"
+          
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
