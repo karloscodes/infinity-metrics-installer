@@ -3,7 +3,6 @@ package tests
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -125,6 +124,10 @@ func testDirectServiceAccess(t *testing.T, url string) {
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
+		// Don't follow redirects so we can check for 302 status
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
 	var resp *http.Response
@@ -145,9 +148,14 @@ func testDirectServiceAccess(t *testing.T, url string) {
 	require.NoError(t, err, "HTTPS request to service should succeed")
 	require.NotNil(t, resp, "HTTPS response should not be nil")
 	defer resp.Body.Close()
-	assert.Contains(t, []int{http.StatusOK, http.StatusFound}, resp.StatusCode,
-		"Service should return 200 OK or 302 Found")
+
+	// Check for 302 Found specifically
+	assert.Equal(t, http.StatusFound, resp.StatusCode, "Service should return 302 Found")
 	t.Logf("Successfully pinged service at %s, got %d", url, resp.StatusCode)
+
+	// Log redirect location
+	location := resp.Header.Get("Location")
+	t.Logf("Redirect location: %s", location)
 }
 
 // testVMServiceAccess tests the service in local environment via VM curl command
@@ -155,6 +163,7 @@ func testVMServiceAccess(t *testing.T, vmName string, url string) {
 	// We'll use curl inside the VM to check the service
 	var success bool
 	var finalOutput string
+	var is302 bool
 
 	// Try several times with delay
 	for i := 0; i < 12; i++ { // 12 * 5s = 60s
@@ -169,10 +178,14 @@ func testVMServiceAccess(t *testing.T, vmName string, url string) {
 
 		t.Logf("Curl attempt %d/12, result: %s, error: %v", i+1, outputStr, err)
 
-		// Check if we got a successful status code
-		if err == nil && (outputStr == "200" || outputStr == "302") {
+		// Check if we got a 302 status code specifically
+		if err == nil && outputStr == "302" {
 			success = true
+			is302 = true
 			break
+		} else if err == nil && outputStr == "200" {
+			// 200 OK is also acceptable but not preferred
+			success = true
 		}
 
 		// Sleep before trying again
@@ -204,7 +217,7 @@ func testVMServiceAccess(t *testing.T, vmName string, url string) {
 	}
 
 	// Assert on the test results
-	log.Printf("Final output: -----------------------%s", finalOutput)
 	assert.True(t, success, fmt.Sprintf("Service should be accessible, got: %s", finalOutput))
+	assert.True(t, is302, "Service should return a 302 redirect status code")
 	t.Logf("Successfully verified service is running in VM")
 }
