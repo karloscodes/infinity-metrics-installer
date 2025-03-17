@@ -40,6 +40,7 @@ jobs:
         env:
           BINARY_PATH: ${{ github.workspace }}/bin/infinity-metrics
           DEBUG: 1
+          LICENSE_KEY: ${{ secrets.LICENSE_KEY }}
         run: make test
       
       - name: Collect logs on failure
