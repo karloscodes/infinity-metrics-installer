@@ -179,6 +179,10 @@ func (r *TestRunner) runLocally() error {
 		}
 	}
 
+	// Before running the installer command, set the ENV variable in the VM
+	envSetCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c", "echo 'export ENV=test' >> /etc/environment")
+	envSetCmd.Run() // Run this before your installer command
+
 	// Copy binary to VM
 	r.logf("Copying binary to VM")
 	copyCmd := exec.Command("multipass", "transfer", r.Config.BinaryPath, fmt.Sprintf("%s:/home/ubuntu/infinity-metrics", r.Config.VMName))
