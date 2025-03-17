@@ -1,5 +1,5 @@
 {
   "app_image": "karloscodes/infinity-metrics-beta:latest",
   "caddy_image": "caddy:2.7-alpine",
-  "version": "1.0.0"
+  "version": "latest"
 }

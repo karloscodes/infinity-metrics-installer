@@ -24,7 +24,7 @@ type ConfigData struct {
 	CaddyImage   string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
 	InstallDir   string // Default: e.g., "/opt/infinity-metrics"
 	BackupPath   string // Default: SQLite backup location
-	Version      string // GitHub Release: Version of the infinity-metrics binary
+	Version      string // GitHub Release: Version of the infinity-metrics binary (optional)
 	InstallerURL string // GitHub Release: URL to download new infinity-metrics binary
 }
 
@@ -46,7 +46,7 @@ func NewConfig(logger *logging.Logger) *Config {
 			CaddyImage:   "caddy:2.7-alpine",
 			InstallDir:   "/opt/infinity-metrics",
 			BackupPath:   "/opt/infinity-metrics/storage/backups",
-			Version:      "0.0.0",
+			Version:      "latest",                                                         // Default to "latest" for display
 			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo), // Default base URL
 		},
 	}
@@ -208,7 +208,7 @@ func (c *Config) FetchFromServer(_ string) error {
 	}
 
 	// Update fields from release
-	c.data.Version = version
+	c.data.Version = version // Set to actual version from release
 	if binaryURL != "" {
 		c.data.InstallerURL = binaryURL
 	} else {
@@ -231,6 +231,7 @@ func (c *Config) fetchConfigJSON(url string) error {
 	var serverData struct {
 		AppImage   string `json:"app_image"`
 		CaddyImage string `json:"caddy_image"`
+		// Version field omitted since it's always "latest" and handled by FetchFromServer
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
 		return fmt.Errorf("failed to decode config.json: %w", err)

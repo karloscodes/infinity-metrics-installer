@@ -88,9 +88,10 @@ func (i *Installer) Run() error {
 		}
 	}
 
-	if err := i.config.FetchFromServer("https://getinfinitymetrics.com/config.json"); err != nil {
+	if err := i.config.FetchFromServer(""); err != nil {
 		i.logger.Warn("Server config fetch failed, using defaults: %v", err)
 	}
+
 	if err := i.config.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
@@ -101,7 +102,7 @@ func (i *Installer) Run() error {
 	}
 
 	i.logger.Info("Setting up automated updates")
-	if err := i.setupCronJob(data.InstallDir); err != nil {
+	if err := i.setupCronJob(); err != nil {
 		return fmt.Errorf("failed to setup cron: %w", err)
 	}
 
@@ -128,9 +129,9 @@ func (i *Installer) createInstallDir(installDir string) error {
 	return nil
 }
 
-func (i *Installer) setupCronJob(installDir string) error {
+func (i *Installer) setupCronJob() error {
 	cronFile := "/etc/cron.d/infinity-metrics-update"
-	binaryPath := filepath.Join(installDir, "infinity-metrics")
+	binaryPath := "/usr/local/bin/infinity-metrics" // Match script’s install location
 	cronContent := fmt.Sprintf("0 0 * * * root %s update\n", binaryPath)
 
 	if err := os.WriteFile(cronFile, []byte(cronContent), 0o644); err != nil {

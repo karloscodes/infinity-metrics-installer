@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/database"
@@ -47,9 +48,12 @@ func (u *Updater) Run(currentVersion string) error {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	// Check if update is needed
-	if data.Version == currentVersion {
-		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, data.Version)
+	// Get the latest version from the installer URL
+	latestVersion := extractVersionFromURL(u.config.GetData().InstallerURL)
+	if latestVersion == "" {
+		u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
+	} else if latestVersion == currentVersion {
+		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, latestVersion)
 	} else {
 		arch := runtime.GOARCH
 		if arch != "amd64" && arch != "arm64" {
@@ -59,7 +63,7 @@ func (u *Updater) Run(currentVersion string) error {
 			if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
-				u.logger.Success("Binary updated to version %s, restarting", data.Version)
+				u.logger.Success("Binary updated to latest version, restarting")
 				// Restart with the new binary
 				return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
 			}
@@ -80,27 +84,21 @@ func (u *Updater) Run(currentVersion string) error {
 
 // update applies Docker and config updates
 func (u *Updater) update() error {
-	totalSteps := 4
+	totalSteps := 3 // Reduced from 4 since SQLite check is removed
 
-	u.logger.Step(1, totalSteps, "Ensuring SQLite is installed")
-	if err := u.database.EnsureSQLiteInstalled(); err != nil {
-		u.logger.Warn("SQLite installation failed: %v", err)
-		u.logger.Warn("Proceeding with limited backup capabilities")
-	}
-
-	u.logger.Step(2, totalSteps, "Loading configuration")
+	u.logger.Step(1, totalSteps, "Loading configuration")
 	data := u.config.GetData()
 	envFile := filepath.Join(data.InstallDir, ".env")
 	if err := u.config.LoadFromFile(envFile); err != nil {
 		return fmt.Errorf("failed to load config from %s: %w", envFile, err)
 	}
 
-	u.logger.Step(3, totalSteps, "Checking for updates from server")
+	u.logger.Step(2, totalSteps, "Checking for updates from server")
 	if err := u.config.FetchFromServer(""); err != nil {
 		u.logger.Warn("Server config fetch failed, using local config: %v", err)
 	}
 
-	u.logger.Step(4, totalSteps, "Applying updates")
+	u.logger.Step(3, totalSteps, "Applying updates")
 	// Create backup before update
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
@@ -160,4 +158,22 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 
 	u.logger.Success("Binary updated successfully")
 	return nil
+}
+
+// extractVersionFromURL extracts the version from the binary URL
+func extractVersionFromURL(url string) string {
+	parts := strings.Split(url, "/")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "infinity-metrics-v") && i < len(parts) {
+			filename := part
+			// Extract version between "v" and architecture suffix
+			if strings.HasPrefix(filename, "infinity-metrics-v") {
+				version := strings.TrimPrefix(filename, "infinity-metrics-v")
+				version = strings.TrimSuffix(version, "-amd64")
+				version = strings.TrimSuffix(version, "-arm64")
+				return version
+			}
+		}
+	}
+	return ""
 }
