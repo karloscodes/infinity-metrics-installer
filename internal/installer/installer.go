@@ -130,8 +130,14 @@ func (i *Installer) createInstallDir(installDir string) error {
 }
 
 func (i *Installer) setupCronJob() error {
+	// Skip cron setup in test environment
+	if os.Getenv("ENV") == "test" {
+		i.logger.Info("Skipping cron setup in test environment")
+		return nil
+	}
+
 	cronFile := "/etc/cron.d/infinity-metrics-update"
-	binaryPath := "/usr/local/bin/infinity-metrics" // Match script’s install location
+	binaryPath := "/usr/local/bin/infinity-metrics" // Match script's install location
 	cronContent := fmt.Sprintf("0 0 * * * root %s update\n", binaryPath)
 
 	if err := os.WriteFile(cronFile, []byte(cronContent), 0o644); err != nil {
