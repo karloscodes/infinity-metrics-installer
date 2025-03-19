@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -46,13 +47,13 @@ func NewConfig(logger *logging.Logger) *Config {
 			CaddyImage:   "caddy:2.7-alpine",
 			InstallDir:   "/opt/infinity-metrics",
 			BackupPath:   "/opt/infinity-metrics/storage/backups",
-			Version:      "latest",                                                         // Default to "latest" for display
-			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo), // Default base URL
+			Version:      "latest",
+			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
 		},
 	}
 }
 
-// CollectFromUser gets required user input
+// CollectFromUser gets required user input upfront
 func (c *Config) CollectFromUser() error {
 	reader := bufio.NewReader(os.Stdin)
 	for _, p := range []struct {
@@ -63,16 +64,34 @@ func (c *Config) CollectFromUser() error {
 		{"Enter admin email address (for SSL certificates):", &c.data.AdminEmail},
 		{"Enter your Infinity Metrics license key:", &c.data.LicenseKey},
 	} {
-		c.logger.Info(p.prompt)
+		// Use fmt.Print instead of logger.Info for prompts
+		fmt.Print(p.prompt + " ")
 		input, err := reader.ReadString('\n')
 		if err != nil {
-			return fmt.Errorf("failed to read input: %w", err)
+			return fmt.Errorf("failed to read input for %s: %w", p.prompt, err)
 		}
 		*p.field = strings.TrimSpace(input)
 		if *p.field == "" {
 			return fmt.Errorf("input for %s cannot be empty", p.prompt)
 		}
+		// Log the input value without [INFO] for cleaner UX
+		fmt.Printf("%s\n", *p.field)
 	}
+
+	// Optional InstallDir prompt
+	fmt.Printf("Enter install directory [%s]: ", c.data.InstallDir)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read install directory: %w", err)
+	}
+	if input = strings.TrimSpace(input); input != "" {
+		c.data.InstallDir = input
+	}
+	fmt.Printf("%s\n", c.data.InstallDir)
+
+	// Update BackupPath based on InstallDir
+	c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+
 	c.logger.Success("Configuration collected from user")
 	return nil
 }
@@ -142,6 +161,7 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "INSTALL_DIR=%s\n", c.data.InstallDir)
 	fmt.Fprintf(file, "BACKUP_PATH=%s\n", c.data.BackupPath)
 	fmt.Fprintf(file, "VERSION=%s\n", c.data.Version)
+	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
 
 	c.logger.Success("Configuration saved to %s", filename)
 	return nil
@@ -176,7 +196,7 @@ func (c *Config) FetchFromServer(_ string) error {
 		return nil
 	}
 
-	// Extract version from tag_name (e.g., "v1.0.0" -> "1.0.0")
+	// Extract version from tag_name
 	version := strings.TrimPrefix(release.TagName, "v")
 	if version == "" {
 		c.logger.Warn("No valid version found in release tag: %s", release.TagName)
@@ -208,7 +228,7 @@ func (c *Config) FetchFromServer(_ string) error {
 	}
 
 	// Update fields from release
-	c.data.Version = version // Set to actual version from release
+	c.data.Version = version
 	if binaryURL != "" {
 		c.data.InstallerURL = binaryURL
 	} else {
@@ -231,7 +251,6 @@ func (c *Config) fetchConfigJSON(url string) error {
 	var serverData struct {
 		AppImage   string `json:"app_image"`
 		CaddyImage string `json:"caddy_image"`
-		// Version field omitted since it's always "latest" and handled by FetchFromServer
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
 		return fmt.Errorf("failed to decode config.json: %w", err)
@@ -254,8 +273,9 @@ func (c *Config) GetData() ConfigData {
 	return c.data
 }
 
+// GetMainDBPath returns the main database path
 func (c *Config) GetMainDBPath() string {
-	return c.data.InstallDir + "/storage/infinity-metrics-production.db"
+	return filepath.Join(c.data.InstallDir, "storage", "infinity-metrics-production.db")
 }
 
 // Validate checks required fields

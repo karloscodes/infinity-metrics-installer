@@ -26,7 +26,6 @@ func TestInstallation(t *testing.T) {
 	// Get binary path
 	binaryPath := os.Getenv("BINARY_PATH")
 	if binaryPath == "" {
-		// Find the appropriate binary based on architecture
 		var binaryPattern string
 		if os.Getenv("ARCH") == "arm64" {
 			binaryPattern = "infinity-metrics-v*-arm64"
@@ -34,12 +33,10 @@ func TestInstallation(t *testing.T) {
 			binaryPattern = "infinity-metrics-v*-amd64"
 		}
 
-		// Find the binary using glob pattern
 		binaries, err := filepath.Glob(filepath.Join(projectRoot, "bin", binaryPattern))
 		require.NoError(t, err, "Failed to find binary")
 
 		if len(binaries) == 0 {
-			// If not found, try the default binary name
 			defaultBinary := filepath.Join(projectRoot, "bin", "infinity-metrics")
 			if _, err := os.Stat(defaultBinary); err == nil {
 				binaryPath = defaultBinary
@@ -52,33 +49,32 @@ func TestInstallation(t *testing.T) {
 	}
 
 	t.Logf("Using binary: %s", binaryPath)
-
-	// Check if the binary exists
 	assert.FileExists(t, binaryPath, "Binary should exist")
 
-	// Create test runner config for direct execution
+	// Create test runner config
 	config := testrunner.DefaultConfig()
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
 	licenseKey := os.Getenv("LICENSE_KEY")
 	if licenseKey == "" {
-		licenseKey = "TEST-LICENSE-KEY" // Fallback value if environment variable is not set
+		licenseKey = "TEST-LICENSE-KEY"
 	}
-	config.StdinInput = fmt.Sprintf("localhost\nadmin@localhost\n%s\n", licenseKey)
+	// Explicitly match config.CollectFromUser() prompts
+	config.StdinInput = fmt.Sprintf(
+		"localhost\n"+ // Domain
+			"admin@localhost\n"+ // AdminEmail
+			"%s\n"+ // LicenseKey
+			"\n", // InstallDir (accept default)
+		licenseKey)
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 5 * time.Minute
 
-	// Create and run the test runner
+	// Run the installer
 	runner := testrunner.NewTestRunner(config)
-
-	// Force VM to be kept after the test run for service testing
-	oldKeepVM := os.Getenv("KEEP_VM")
-	os.Setenv("KEEP_VM", "1")             // Set this temporarily
-	defer os.Setenv("KEEP_VM", oldKeepVM) // Restore original value when done
+	os.Setenv("KEEP_VM", "1")
+	defer os.Setenv("KEEP_VM", os.Getenv("KEEP_VM")) // Restore original value
 
 	err = runner.Run()
-
-	// Check outputs regardless of success/failure
 	outputStr := runner.Stdout()
 	errorStr := runner.Stderr()
 	t.Logf("Installer Output:\n%s", outputStr)
@@ -86,45 +82,43 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// Assert installer ran successfully
+	// Assert installation success
 	require.NoError(t, err, "Installation should complete without error")
 	assert.NotContains(t, outputStr, "[ERROR]", "Installer should not return errors")
 	assert.Contains(t, outputStr, "Installation completed successfully", "Installation should complete")
+	assert.Contains(t, outputStr, "Access your dashboard at https://localhost", "Config should apply domain")
 
-	// Test service access in both environments
+	// Test service availability
 	t.Log("Testing service availability...")
 	testServiceAvailability(t, isRunningInCI(), config.VMName)
+
+	// Cleanup (optional, depending on KEEP_VM)
+	if os.Getenv("KEEP_VM") != "1" {
+		cleanupTestEnvironment(t, config.VMName)
+	}
 }
 
-// isRunningInCI determines if we're running in CI environment
 func isRunningInCI() bool {
 	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != ""
 }
 
-// testServiceAvailability tests if the installed service is responding
 func testServiceAvailability(t *testing.T, isCI bool, vmName string) {
-	// We'll use a different approach based on the environment
-	serviceUrl := "https://localhost"
-
+	serviceURL := "https://localhost"
 	if isCI {
-		// In CI, we can make direct HTTP requests
 		t.Log("Testing HTTPS access with direct HTTP client...")
-		testDirectServiceAccess(t, serviceUrl)
+		testDirectServiceAccess(t, serviceURL)
 	} else {
-		// In local environment with VM, we need to execute curl inside the VM
 		t.Log("Testing HTTPS access via VM curl command...")
-		testVMServiceAccess(t, vmName, serviceUrl)
+		testVMServiceAccess(t, vmName, serviceURL)
 	}
 }
 
-// testDirectServiceAccess tests the service in CI environment with direct HTTP requests
 func testDirectServiceAccess(t *testing.T, url string) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
-		// Don't follow redirects so we can check for 302 status
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -132,8 +126,7 @@ func testDirectServiceAccess(t *testing.T, url string) {
 
 	var resp *http.Response
 	var err error
-
-	for i := 0; i < 12; i++ { // 12 * 5s = 60s
+	for i := 0; i < 6; i++ { // Reduced retries for faster tests
 		resp, err = client.Get(url)
 		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound) {
 			break
@@ -141,83 +134,60 @@ func testDirectServiceAccess(t *testing.T, url string) {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		t.Logf("Waiting for service to respond (attempt %d/12)...", i+1)
+		t.Logf("Waiting for service (attempt %d/6)...", i+1)
 		time.Sleep(5 * time.Second)
 	}
 
-	require.NoError(t, err, "HTTPS request to service should succeed")
-	require.NotNil(t, resp, "HTTPS response should not be nil")
+	require.NoError(t, err, "HTTPS request should succeed")
 	defer resp.Body.Close()
-
-	// Check for 302 Found specifically
 	assert.Equal(t, http.StatusFound, resp.StatusCode, "Service should return 302 Found")
-	t.Logf("Successfully pinged service at %s, got %d", url, resp.StatusCode)
-
-	// Log redirect location
-	location := resp.Header.Get("Location")
-	t.Logf("Redirect location: %s", location)
+	t.Logf("Service responded with %d, Location: %s", resp.StatusCode, resp.Header.Get("Location"))
 }
 
-// testVMServiceAccess tests the service in local environment via VM curl command
 func testVMServiceAccess(t *testing.T, vmName string, url string) {
-	// We'll use curl inside the VM to check the service
 	var success bool
 	var finalOutput string
 	var is302 bool
 
-	// Try several times with delay
-	for i := 0; i < 12; i++ { // 12 * 5s = 60s
-		// Form the curl command to execute inside the VM
-		// Note: using -k to ignore SSL certificate verification
+	for i := 0; i < 6; i++ {
 		cmd := exec.Command("multipass", "exec", vmName, "--",
 			"curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
-
 		output, err := cmd.CombinedOutput()
 		outputStr := strings.TrimSpace(string(output))
 		finalOutput = outputStr
 
-		t.Logf("Curl attempt %d/12, result: %s, error: %v", i+1, outputStr, err)
-
-		// Check if we got a 302 status code specifically
+		t.Logf("Curl attempt %d/6, result: %s, error: %v", i+1, outputStr, err)
 		if err == nil && outputStr == "302" {
 			success = true
 			is302 = true
 			break
 		} else if err == nil && outputStr == "200" {
-			// 200 OK is also acceptable but not preferred
 			success = true
 		}
-
-		// Sleep before trying again
 		time.Sleep(5 * time.Second)
-
-		// After a few attempts, let's try an alternate port
-		if i == 5 {
-			// Try port 443 (standard HTTPS) in case 8443 isn't the right one
-			url = "https://localhost:443"
-			t.Logf("Switching to alternative URL: %s", url)
-		}
 	}
 
-	// Check VM service logs if we couldn't access it
 	if !success {
-		t.Log("Service not responding, checking logs...")
 		logCmd := exec.Command("multipass", "exec", vmName, "--",
 			"sudo", "cat", "/opt/infinity-metrics/logs/infinity-metrics.log")
-
 		logOutput, _ := logCmd.CombinedOutput()
 		t.Logf("Service logs:\n%s", string(logOutput))
-
-		// Also check if the service process is running
-		psCmd := exec.Command("multipass", "exec", vmName, "--",
-			"ps", "aux", "|", "grep", "infinity")
-
-		psOutput, _ := psCmd.CombinedOutput()
-		t.Logf("Process info:\n%s", string(psOutput))
 	}
 
-	// Assert on the test results
 	assert.True(t, success, fmt.Sprintf("Service should be accessible, got: %s", finalOutput))
-	assert.True(t, is302, "Service should return a 302 redirect status code")
-	t.Logf("Successfully verified service is running in VM")
+	assert.True(t, is302, "Service should return 302 redirect")
+	t.Log("Service verified in VM")
+}
+
+func cleanupTestEnvironment(t *testing.T, vmName string) {
+	t.Log("Cleaning up test environment...")
+	cmd := exec.Command("multipass", "delete", "--purge", vmName)
+	if err := cmd.Run(); err != nil {
+		t.Logf("Failed to delete VM %s: %v", vmName, err)
+	}
+	// Add Docker cleanup if needed
+	cmd = exec.Command("docker", "system", "prune", "-f")
+	if err := cmd.Run(); err != nil {
+		t.Logf("Failed to prune Docker: %v", err)
+	}
 }
