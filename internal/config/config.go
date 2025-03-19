@@ -154,7 +154,7 @@ func (c *Config) SaveToFile(filename string) error {
 	defer file.Close()
 
 	fmt.Fprintf(file, "DOMAIN=%s\n", c.data.Domain)
-	fmt.Fprintf(file, "ADMIN_EMAIL=%s\n", c.data.AdminEmail)
+	fmt.Fprintf(file, "INFINITY_METRICS_ADMIN_EMAIL=%s\n", c.data.AdminEmail)
 	fmt.Fprintf(file, "INFINITY_METRICS_LICENSE_KEY=%s\n", c.data.LicenseKey)
 	fmt.Fprintf(file, "APP_IMAGE=%s\n", c.data.AppImage)
 	fmt.Fprintf(file, "CADDY_IMAGE=%s\n", c.data.CaddyImage)

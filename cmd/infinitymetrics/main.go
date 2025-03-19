@@ -19,22 +19,18 @@ func main() {
 
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	verbose := flag.Bool("verbose", false, "Enable verbose output")
-	noColor := flag.Bool("no-color", false, "Disable colored output")
 	quiet := flag.Bool("quiet", false, "Suppress non-error output")
 	version := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
 	logger := logging.NewLogger(logging.Config{
-		Level:    *logLevel,
-		NoColor:  *noColor,
-		Verbose:  *verbose,
-		ShowTime: true,
-		Quiet:    *quiet,
+		Level:   *logLevel,
+		Verbose: *verbose,
+		Quiet:   *quiet,
 	})
 
 	if *version {
 		fmt.Printf("Infinity Metrics Installer v%s\n", currentInstallerVersion)
-		logger.Sync()
 		os.Exit(0)
 	}
 
@@ -42,12 +38,10 @@ func main() {
 
 	if len(os.Args) < 2 {
 		printUsage(logger)
-		logger.Sync()
 		os.Exit(2)
 	}
 
 	command := os.Args[1]
-	// Use fmt.Println for top-level messages without date or [INFO]
 	fmt.Printf("Infinity Metrics Installer v%s\n", currentInstallerVersion)
 
 	switch command {
@@ -59,16 +53,12 @@ func main() {
 		runRestore(inst, logger, startTime)
 	case "help":
 		printUsage(logger)
-		logger.Sync()
 		os.Exit(0)
 	default:
 		logger.Error("Invalid command: %s", command)
 		printUsage(logger)
-		logger.Sync()
 		os.Exit(2)
 	}
-
-	logger.Sync()
 }
 
 func runInstall(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
@@ -81,6 +71,7 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 		logger.Error("Failed to collect configuration: %v", err)
 		os.Exit(1)
 	}
+	logger.Success("Configuration collected from user")
 
 	stop := logger.StartSpinner("Running installation...")
 	err := inst.RunWithConfig(config)
@@ -93,7 +84,8 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Installation completed in %s", elapsedTime)
 	data := inst.GetConfig().GetData()
-	logger.Info("Access your dashboard at https://%s", data.Domain)
+	logger.InfoWithTime("Access your dashboard at https://%s", data.Domain)
+	os.Stdout.Sync() // Force flush to ensure output is captured
 }
 
 func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
@@ -127,7 +119,7 @@ func runRestore(inst *installer.Installer, logger *logging.Logger, startTime tim
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Restore completed in %s", elapsedTime)
 	data := inst.GetConfig().GetData()
-	logger.Info("Infinity Metrics restored, access at https://%s", data.Domain)
+	logger.InfoWithTime("Infinity Metrics restored, access at https://%s", data.Domain)
 }
 
 func printUsage(logger *logging.Logger) {

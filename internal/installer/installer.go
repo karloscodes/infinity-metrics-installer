@@ -15,7 +15,7 @@ const (
 	DefaultInstallDir   = "/opt/infinity-metrics"
 	DefaultBinaryPath   = "/usr/local/bin/infinity-metrics"
 	DefaultCronFile     = "/etc/cron.d/infinity-metrics-update"
-	DefaultCronSchedule = "0 0 * * *" // Midnight daily
+	DefaultCronSchedule = "0 0 * * *"
 )
 
 type Installer struct {
@@ -52,13 +52,11 @@ func (i *Installer) GetBackupDir() string {
 	return filepath.Join(data.InstallDir, "storage", "backups")
 }
 
-// RunWithConfig executes the installation process with a pre-collected config
 func (i *Installer) RunWithConfig(cfg *config.Config) error {
-	i.config = cfg // Set the pre-collected config
-	return i.Run() // Call the existing Run logic
+	i.config = cfg
+	return i.Run()
 }
 
-// Run executes the installation process
 func (i *Installer) Run() error {
 	totalSteps := 5
 
@@ -90,12 +88,11 @@ func (i *Installer) Run() error {
 	}
 	envFile := filepath.Join(data.InstallDir, ".env")
 	if _, err := os.Stat(envFile); os.IsNotExist(err) {
-		// Config already collected, just save it
 		if err := i.config.SaveToFile(envFile); err != nil {
 			return fmt.Errorf("failed to save config to %s: %w", envFile, err)
 		}
 	} else {
-		i.logger.Info("Loading existing configuration from %s", envFile)
+		i.logger.InfoWithTime("Loading existing configuration from %s", envFile)
 		if err := i.config.LoadFromFile(envFile); err != nil {
 			return fmt.Errorf("failed to load config from %s: %w", envFile, err)
 		}
@@ -121,7 +118,7 @@ func (i *Installer) Run() error {
 	}
 	i.logger.StopSpinner(stop, true, "Deployment completed")
 
-	i.logger.Info("Setting up automated updates")
+	i.logger.InfoWithTime("Setting up automated updates")
 	if err := i.setupCronJob(); err != nil {
 		return fmt.Errorf("failed to setup cron: %w", err)
 	}
@@ -133,7 +130,7 @@ func (i *Installer) Restore() error {
 	backupDir := i.GetBackupDir()
 	mainDBPath := i.GetMainDBPath()
 
-	i.logger.Info("Restoring database from %s to %s", backupDir, mainDBPath)
+	i.logger.InfoWithTime("Restoring database from %s to %s", backupDir, mainDBPath)
 	stop := i.logger.StartSpinner("Restoring database...")
 	err := i.database.RestoreDatabase(mainDBPath, backupDir)
 	if err != nil {
@@ -145,7 +142,7 @@ func (i *Installer) Restore() error {
 }
 
 func (i *Installer) createInstallDir(installDir string) error {
-	i.logger.Info("Creating installation directory: %s", installDir)
+	i.logger.InfoWithTime("Creating installation directory: %s", installDir)
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
@@ -155,7 +152,7 @@ func (i *Installer) createInstallDir(installDir string) error {
 
 func (i *Installer) setupCronJob() error {
 	if os.Getenv("ENV") == "test" {
-		i.logger.Info("Skipping cron setup in test environment")
+		i.logger.InfoWithTime("Skipping cron setup in test environment")
 		return nil
 	}
 
@@ -168,6 +165,6 @@ func (i *Installer) setupCronJob() error {
 		return fmt.Errorf("failed to write cron file %s: %w", cronFile, err)
 	}
 	i.logger.StopSpinner(stop, true, "Cron job setup complete")
-	i.logger.Info("Automatic updates scheduled for midnight daily")
+	i.logger.InfoWithTime("Automatic updates scheduled for midnight daily")
 	return nil
 }

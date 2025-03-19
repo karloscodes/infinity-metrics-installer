@@ -26,29 +26,27 @@ type Updater struct {
 func NewUpdater(logger *logging.Logger) *Updater {
 	db := database.NewDatabase(logger)
 	return &Updater{
-		logger:   logger,
+		logger:   logging.NewFileLogger(logging.DefaultConfig()), // Use file logger for updater
 		config:   config.NewConfig(logger),
 		docker:   docker.NewDocker(logger, db),
 		database: db,
 	}
 }
 
-// Run executes the update process
 func (u *Updater) Run(currentVersion string) error {
 	data := u.config.GetData()
 	envFile := filepath.Join(data.InstallDir, ".env")
 
-	// Load existing config
+	u.logger.Info("Loading configuration")
 	if err := u.config.LoadFromFile(envFile); err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Fetch latest config from GitHub release
+	u.logger.Info("Checking for updates from server")
 	if err := u.config.FetchFromServer(""); err != nil {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	// Get the latest version from the installer URL
 	latestVersion := extractVersionFromURL(u.config.GetData().InstallerURL)
 	if latestVersion == "" {
 		u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
@@ -64,13 +62,11 @@ func (u *Updater) Run(currentVersion string) error {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
 				u.logger.Success("Binary updated to latest version, restarting")
-				// Restart with the new binary
 				return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
 			}
 		}
 	}
 
-	// Proceed with Docker and config updates
 	if err := u.update(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
@@ -82,9 +78,8 @@ func (u *Updater) Run(currentVersion string) error {
 	return nil
 }
 
-// update applies Docker and config updates
 func (u *Updater) update() error {
-	totalSteps := 3 // Reduced from 4 since SQLite check is removed
+	totalSteps := 3
 
 	u.logger.Step(1, totalSteps, "Loading configuration")
 	data := u.config.GetData()
@@ -99,7 +94,6 @@ func (u *Updater) update() error {
 	}
 
 	u.logger.Step(3, totalSteps, "Applying updates")
-	// Create backup before update
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {
@@ -109,7 +103,6 @@ func (u *Updater) update() error {
 		u.logger.Success("Database backup created successfully")
 	}
 
-	// Update Docker containers
 	if err := u.docker.Update(u.config); err != nil {
 		return fmt.Errorf("failed to update Docker containers: %w", err)
 	}
@@ -122,9 +115,8 @@ func (u *Updater) update() error {
 	return nil
 }
 
-// updateBinary downloads and updates the installer binary from the GitHub release
 func (u *Updater) updateBinary(url, installDir, arch string) error {
-	u.logger.Info("Downloading new installer binary from %s", url)
+	u.logger.InfoWithTime("Downloading new installer binary from %s", url)
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -150,7 +142,6 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 		return fmt.Errorf("chmod new binary: %w", err)
 	}
 
-	// Replace old binary
 	oldBinary := filepath.Join(installDir, "infinity-metrics")
 	if err := os.Rename(newBinary, oldBinary); err != nil {
 		return fmt.Errorf("replace binary: %w", err)
@@ -160,13 +151,11 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 	return nil
 }
 
-// extractVersionFromURL extracts the version from the binary URL
 func extractVersionFromURL(url string) string {
 	parts := strings.Split(url, "/")
 	for i, part := range parts {
 		if strings.HasPrefix(part, "infinity-metrics-v") && i < len(parts) {
 			filename := part
-			// Extract version between "v" and architecture suffix
 			if strings.HasPrefix(filename, "infinity-metrics-v") {
 				version := strings.TrimPrefix(filename, "infinity-metrics-v")
 				version = strings.TrimSuffix(version, "-amd64")

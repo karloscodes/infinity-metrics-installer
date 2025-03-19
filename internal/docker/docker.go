@@ -14,7 +14,6 @@ import (
 	"infinity-metrics-installer/internal/logging"
 )
 
-// Constants for Docker configuration
 const (
 	NetworkName      = "infinity-network"
 	CaddyName        = "infinity-caddy"
@@ -24,13 +23,11 @@ const (
 	HealthCheckTries = 5
 )
 
-// Docker manages Docker-related operations
 type Docker struct {
 	logger *logging.Logger
 	db     *database.Database
 }
 
-// NewDocker creates a new Docker instance
 func NewDocker(logger *logging.Logger, db *database.Database) *Docker {
 	return &Docker{
 		logger: logger,
@@ -38,7 +35,6 @@ func NewDocker(logger *logging.Logger, db *database.Database) *Docker {
 	}
 }
 
-// RunCommand executes a Docker command and returns its output
 func (d *Docker) RunCommand(args ...string) (string, error) {
 	d.logger.Debug("Running docker %s", strings.Join(args, " "))
 	var stdout, stderr bytes.Buffer
@@ -51,7 +47,6 @@ func (d *Docker) RunCommand(args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// EnsureInstalled checks and installs Docker if necessary
 func (d *Docker) EnsureInstalled() error {
 	if version, err := d.RunCommand("version"); err == nil {
 		d.logger.Success("Docker is installed (version: %s)", strings.TrimSpace(strings.Split(version, "\n")[0]))
@@ -66,7 +61,7 @@ func (d *Docker) EnsureInstalled() error {
 		d.logger.Error("Installation output: %s", string(output))
 		return fmt.Errorf("install failed: %w", err)
 	}
-	d.logger.StopSpinner(stop, true, "Docker installed")
+	d.logger.StopSpinner(stop, true, "Docker installed successfully") // Changed to "successfully" to match output
 
 	for _, cmd := range [][]string{
 		{"systemctl", "start", "docker"},
@@ -77,20 +72,19 @@ func (d *Docker) EnsureInstalled() error {
 		}
 	}
 
+	// Log version after spinner stops to avoid overlap
 	version, err := d.RunCommand("version")
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
-	d.logger.Info("Docker version: %s", strings.TrimSpace(strings.Split(version, "\n")[0]))
+	d.logger.InfoWithTime("Docker version: %s", strings.TrimSpace(strings.Split(version, "\n")[0]))
 	return nil
 }
 
-// Deploy sets up the initial Docker environment
 func (d *Docker) Deploy(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
-	// Create required directories
 	for _, dir := range []string{
 		filepath.Join(dataDir, "storage"),
 		filepath.Join(dataDir, "logs"),
@@ -103,7 +97,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Ensure Docker network exists
 	if _, err := d.RunCommand("network", "inspect", NetworkName); err != nil {
 		d.logger.Info("Creating Docker network %s", NetworkName)
 		stop := d.logger.StartSpinner("Creating network...")
@@ -114,14 +107,12 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		d.logger.StopSpinner(stop, true, "Network created")
 	}
 
-	// Generate and write Caddyfile
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
 	caddyContent := d.generateCaddyfile(data, AppNamePrimary, "")
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
 
-	// Pull Docker images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		stop := d.logger.StartSpinner("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
@@ -133,11 +124,10 @@ func (d *Docker) Deploy(conf *config.Config) error {
 				return fmt.Errorf("pull %s failed after %d retries: %w", image, MaxRetries, err)
 			}
 			d.logger.Warn("Pull %s failed, retrying (%d/%d)", image, i+1, MaxRetries)
-			time.Sleep(time.Duration(i+1) * 2 * time.Second) // Exponential backoff
+			time.Sleep(time.Duration(i+1) * 2 * time.Second)
 		}
 	}
 
-	// Deploy Caddy container
 	if !d.IsRunning(CaddyName) {
 		d.StopAndRemove(CaddyName)
 		stop := d.logger.StartSpinner("Starting Caddy container...")
@@ -168,12 +158,10 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	return d.DeployApp(data, AppNamePrimary)
 }
 
-// Update performs a blue-green deployment
 func (d *Docker) Update(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
-	// Ensure network exists
 	if _, err := d.RunCommand("network", "inspect", NetworkName); err != nil {
 		d.logger.Info("Creating Docker network %s", NetworkName)
 		if _, err := d.RunCommand("network", "create", NetworkName); err != nil {
@@ -181,15 +169,14 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
-	// Pull new images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
-		stop := d.logger.StartSpinner("Pulling %s...", image)
+		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
 			if _, err := d.RunCommand("pull", image); err == nil {
-				d.logger.StopSpinner(stop, true, "%s pulled successfully", image)
+				d.logger.Info("%s pulled successfully", image)
 				break
 			} else if i == MaxRetries-1 {
-				d.logger.StopSpinner(stop, false, "Failed to pull %s", image)
+				d.logger.Info("Failed to pull %s", image)
 				return fmt.Errorf("pull %s failed after %d retries: %w", image, MaxRetries, err)
 			}
 			d.logger.Warn("Pull %s failed, retrying (%d/%d)", image, i+1, MaxRetries)
@@ -197,32 +184,28 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
-	// Determine current and new containers
 	currentName := AppNamePrimary
 	newName := AppNameSecondary
 	if d.IsRunning(newName) {
 		currentName, newName = newName, AppNamePrimary
 	}
 
-	// Backup database
 	mainDBPath := filepath.Join(dataDir, "storage", "infinity-metrics-production.db")
 	backupDir := filepath.Join(dataDir, "storage", "backups")
-	stop := d.logger.StartSpinner("Backing up database...")
+	d.logger.Info("Backing up database...")
 	if _, err := d.db.BackupDatabase(mainDBPath, backupDir); err != nil {
-		d.logger.StopSpinner(stop, false, "Database backup failed")
+		d.logger.Info("Database backup failed")
 		d.logger.Warn("Proceeding without backup: %v", err)
 	} else {
-		d.logger.StopSpinner(stop, true, "Database backed up")
+		d.logger.Info("Database backed up")
 	}
 
-	// Deploy new container
-	stop = d.logger.StartSpinner("Deploying %s...", newName)
 	for i := 0; i < MaxRetries; i++ {
 		if err := d.DeployApp(data, newName); err == nil {
-			d.logger.StopSpinner(stop, true, "%s deployed", newName)
+			d.logger.Info("%s deployed", newName)
 			break
 		} else if i == MaxRetries-1 {
-			d.logger.StopSpinner(stop, false, "Failed to deploy %s", newName)
+			d.logger.Error("Failed to deploy %s", newName)
 			d.StopAndRemove(newName)
 			return fmt.Errorf("deploy %s failed after %d retries: %w", newName, MaxRetries, err)
 		}
@@ -233,60 +216,54 @@ func (d *Docker) Update(conf *config.Config) error {
 
 	d.ensureNetworkConnected(newName, NetworkName)
 
-	// Health check
-	stop = d.logger.StartSpinner("Checking %s health...", newName)
+	d.logger.Info("Checking %s health...", newName)
 	for i := 0; i < HealthCheckTries; i++ {
 		if _, err := d.RunCommand("exec", newName, "curl", "-f", "http://localhost:8080/_health"); err == nil {
-			d.logger.StopSpinner(stop, true, "%s is healthy", newName)
+			d.logger.Info("%s is healthy", newName)
 			break
 		}
 		time.Sleep(1 * time.Second)
 		if i == HealthCheckTries-1 {
-			d.logger.StopSpinner(stop, false, "Health check failed for %s", newName)
+			d.logger.Error("Health check failed for %s", newName)
 			d.StopAndRemove(newName)
 			return fmt.Errorf("new container %s unhealthy after %d attempts", newName, HealthCheckTries)
 		}
 	}
 
-	// Stage 1: Update Caddyfile with both upstreams
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
 	caddyContent := d.generateCaddyfile(data, currentName, newName)
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write transitional Caddyfile: %w", err)
 	}
-	stop = d.logger.StartSpinner("Reloading Caddy with both upstreams...")
+	d.logger.Info("Reloading Caddy with both upstreams...")
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
-		d.logger.StopSpinner(stop, false, "Caddy reload failed")
+		d.logger.Error("Caddy reload failed")
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with both upstreams: %w", err)
 	}
-	d.logger.StopSpinner(stop, true, "Caddy updated with both upstreams")
+	d.logger.Info("Caddy updated with both upstreams")
 
-	// Wait for traffic to stabilize
 	time.Sleep(2 * time.Second)
 
-	// Stage 2: Update Caddyfile to only new upstream
 	caddyContent = d.generateCaddyfile(data, newName, "")
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write final Caddyfile: %w", err)
 	}
-	stop = d.logger.StartSpinner("Reloading Caddy with new upstream...")
+	d.logger.Info("Reloading Caddy with new upstream...")
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
-		d.logger.StopSpinner(stop, false, "Caddy reload failed")
+		d.logger.Error("Caddy reload failed")
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with new upstream: %w", err)
 	}
-	d.logger.StopSpinner(stop, true, "Caddy updated to new upstream")
+	d.logger.Info("Caddy updated to new upstream")
 
-	// Cleanup
 	d.StopAndRemove(currentName)
 	d.RunCommand("image", "prune", "-f")
-	return nil // Success logged in main.go
+	return nil
 }
 
-// DeployApp deploys an application container
 func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	d.StopAndRemove(name)
 	_, err := d.RunCommand("run", "-d",
@@ -308,13 +285,11 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	return nil
 }
 
-// StopAndRemove stops and removes a container
 func (d *Docker) StopAndRemove(name string) {
 	d.RunCommand("stop", name)
 	d.RunCommand("rm", name)
 }
 
-// updateCaddyConfig reloads Caddy with new configuration
 func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
 	var buf bytes.Buffer
 	buf.WriteString(caddyConfig)
@@ -328,13 +303,11 @@ func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
 	return nil
 }
 
-// IsRunning checks if a container is running
 func (d *Docker) IsRunning(name string) bool {
 	out, err := d.RunCommand("ps", "-q", "-f", "name="+name)
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-// ensureNetworkConnected ensures a container is connected to a network
 func (d *Docker) ensureNetworkConnected(container, network string) {
 	if _, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}"); err == nil {
 		if !strings.Contains(err.Error(), container) {
@@ -343,7 +316,6 @@ func (d *Docker) ensureNetworkConnected(container, network string) {
 	}
 }
 
-// generateCaddyfile generates a Caddy configuration
 func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondaryApp string) string {
 	upstreams := primaryApp + ":8080"
 	if secondaryApp != "" {
