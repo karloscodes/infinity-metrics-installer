@@ -100,3 +100,6 @@ else
 		fi; \
 	fi
 endif
+
+start-test-vm:
+	bash scripts/start-vm.sh
