@@ -61,7 +61,7 @@ func (c *Config) CollectFromUser() error {
 		field  *string
 	}{
 		{"Enter your domain name (e.g., analytics.example.com):", &c.data.Domain},
-		{"Enter admin email address (for SSL certificates):", &c.data.AdminEmail},
+		{"Enter admin email address:", &c.data.AdminEmail},
 		{"Enter your Infinity Metrics license key:", &c.data.LicenseKey},
 	} {
 		// Use fmt.Print instead of logger.Info for prompts

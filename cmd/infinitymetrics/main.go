@@ -23,6 +23,7 @@ func main() {
 	version := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
+	// Configure the main logger to log to stdout
 	logger := logging.NewLogger(logging.Config{
 		Level:   *logLevel,
 		Verbose: *verbose,
@@ -71,11 +72,9 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 		logger.Error("Failed to collect configuration: %v", err)
 		os.Exit(1)
 	}
-	logger.Success("Configuration collected from user")
 
-	stop := logger.StartSpinner("Running installation...")
+	logger.Info("Running installation...")
 	err := inst.RunWithConfig(config)
-	logger.StopSpinner(stop, err == nil, "Installation %s", Ternary(err == nil, "completed", "failed"))
 	if err != nil {
 		logger.Error("Installation failed: %v", err)
 		os.Exit(1)
@@ -93,9 +92,8 @@ func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time
 	logger.Debug("Initializing update environment")
 
 	updater := updater.NewUpdater(logger)
-	stop := logger.StartSpinner("Running update...")
+	logger.Info("Running update...")
 	err := updater.Run(currentInstallerVersion)
-	logger.StopSpinner(stop, err == nil, "Update %s", Ternary(err == nil, "completed", "failed"))
 	if err != nil {
 		logger.Error("Update failed: %v", err)
 		os.Exit(1)
@@ -108,9 +106,8 @@ func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time
 func runRestore(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
 	fmt.Println("Starting Infinity Metrics Restore")
 
-	stop := logger.StartSpinner("Running restore...")
+	logger.Info("Running restore...")
 	err := inst.Restore()
-	logger.StopSpinner(stop, err == nil, "Restore %s", Ternary(err == nil, "completed", "failed"))
 	if err != nil {
 		logger.Error("Restore failed: %v", err)
 		os.Exit(1)

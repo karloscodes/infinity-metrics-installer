@@ -24,11 +24,20 @@ type Updater struct {
 }
 
 func NewUpdater(logger *logging.Logger) *Updater {
-	db := database.NewDatabase(logger)
+	// Create a new file logger for the Updater with a specific log file name
+	fileLogger := logging.NewFileLogger(logging.Config{
+		Level:   logger.Level.String(), // Match the log level from the main logger
+		Verbose: logger.GetVerbose(),   // Use getter method
+		Quiet:   logger.GetQuiet(),     // Use getter method
+		LogDir:  "",                    // Use default log directory (/opt/infinity-metrics/logs)
+		LogFile: "updater.log",         // Specify the log file name for the Updater
+	})
+
+	db := database.NewDatabase(fileLogger)
 	return &Updater{
-		logger:   logging.NewFileLogger(logging.DefaultConfig()), // Use file logger for updater
-		config:   config.NewConfig(logger),
-		docker:   docker.NewDocker(logger, db),
+		logger:   fileLogger, // Use the file logger for the Updater
+		config:   config.NewConfig(fileLogger),
+		docker:   docker.NewDocker(fileLogger, db),
 		database: db,
 	}
 }
@@ -81,19 +90,19 @@ func (u *Updater) Run(currentVersion string) error {
 func (u *Updater) update() error {
 	totalSteps := 3
 
-	u.logger.Step(1, totalSteps, "Loading configuration")
+	u.logger.Info("Step 1/%d: Loading configuration", totalSteps)
 	data := u.config.GetData()
 	envFile := filepath.Join(data.InstallDir, ".env")
 	if err := u.config.LoadFromFile(envFile); err != nil {
 		return fmt.Errorf("failed to load config from %s: %w", envFile, err)
 	}
 
-	u.logger.Step(2, totalSteps, "Checking for updates from server")
+	u.logger.Info("Step 2/%d: Checking for updates from server", totalSteps)
 	if err := u.config.FetchFromServer(""); err != nil {
 		u.logger.Warn("Server config fetch failed, using local config: %v", err)
 	}
 
-	u.logger.Step(3, totalSteps, "Applying updates")
+	u.logger.Info("Step 3/%d: Applying updates", totalSteps)
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {

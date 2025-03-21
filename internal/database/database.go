@@ -62,7 +62,6 @@ func (d *Database) EnsureSQLiteInstalled() error {
 		return fmt.Errorf("SQLite installation verification failed: %w", err)
 	}
 
-	d.logger.Success("SQLite installed successfully")
 	return nil
 }
 

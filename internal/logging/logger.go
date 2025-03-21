@@ -1,11 +1,9 @@
 package logging
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -16,10 +14,12 @@ type Config struct {
 	Verbose bool
 	LogDir  string
 	Quiet   bool
+	LogFile string // New field to specify the log file name
 }
 
 type Logger struct {
 	*logrus.Logger
+	config      Config // Store the configuration
 	fileLogging bool
 }
 
@@ -27,12 +27,18 @@ func NewLogger(config Config) *Logger {
 	logger := logrus.New()
 	logger.SetOutput(os.Stdout)
 	logger.SetFormatter(&logrus.TextFormatter{
-		DisableTimestamp: true,
-		DisableColors:    false,
-		DisableQuote:     true,
+		DisableTimestamp:       false,      // Enable timestamps for console logs
+		TimestampFormat:        "15:04:05", // Use a short time format (HH:MM:SS)
+		DisableColors:          false,      // Keep colors for console logs
+		DisableQuote:           true,
+		ForceColors:            true, // Ensure colors even if output is redirected
+		FullTimestamp:          true,
+		DisableLevelTruncation: true,
+		PadLevelText:           false,
 		FieldMap: logrus.FieldMap{
-			logrus.FieldKeyLevel: "",
-			logrus.FieldKeyMsg:   "",
+			logrus.FieldKeyLevel: "", // Remove the level prefix
+			logrus.FieldKeyMsg:   "", // Remove the msg prefix
+			logrus.FieldKeyTime:  "", // We'll prepend the timestamp manually
 		},
 	})
 
@@ -57,6 +63,7 @@ func NewLogger(config Config) *Logger {
 
 	return &Logger{
 		Logger:      logger,
+		config:      config,
 		fileLogging: false,
 	}
 }
@@ -73,9 +80,15 @@ func NewFileLogger(config Config) *Logger {
 		}
 	}
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create log directory %s: %v\n", logDir, err)
+		logger.Errorf("Failed to create log directory %s: %v", logDir, err)
 	}
-	logFile := filepath.Join(logDir, "infinity-metrics-cli.log")
+
+	// Use the LogFile field if specified, otherwise default to infinity-metrics-cli.log
+	logFileName := config.LogFile
+	if logFileName == "" {
+		logFileName = "infinity-metrics-cli.log"
+	}
+	logFile := filepath.Join(logDir, logFileName)
 
 	logger.AddHook(&FileHook{
 		Writer: &lumberjack.Logger{
@@ -112,76 +125,49 @@ func (h *FileHook) Fire(entry *logrus.Entry) error {
 }
 
 func (l *Logger) Debug(format string, args ...interface{}) {
-	l.Logger.Debug(fmt.Sprintf(format, args...))
+	l.Logger.Debugf(format, args...)
 }
 
 func (l *Logger) Info(format string, args ...interface{}) {
-	l.Logger.Info(fmt.Sprintf(format, args...))
+	l.Logger.Infof(format, args...)
 }
 
 func (l *Logger) Warn(format string, args ...interface{}) {
-	l.Logger.Warn(fmt.Sprintf(format, args...))
+	l.Logger.Warnf(format, args...)
 }
 
 func (l *Logger) Error(format string, args ...interface{}) {
-	l.Logger.Error(fmt.Sprintf(format, args...))
+	l.Logger.Errorf(format, args...)
 }
 
 func (l *Logger) Success(format string, args ...interface{}) {
-	msg := fmt.Sprintf("✔ "+format, args...)
-	l.Logger.Info(msg)
+	l.Logger.Infof("✔ "+format, args...)
 	if l.fileLogging {
-		l.Logger.WithField("status", "success").Info(fmt.Sprintf(format, args...))
+		l.Logger.WithField("status", "success").Infof(format, args...)
 	}
 }
 
 func (l *Logger) Step(step, total int, format string, args ...interface{}) {
-	msg := fmt.Sprintf("➜ Step %d/%d: %s", step, total, fmt.Sprintf(format, args...))
-	l.Logger.Info(msg)
+	l.Logger.Infof("➜ Step %d/%d: "+format, append([]interface{}{step, total}, args...)...)
 	if l.fileLogging {
 		l.Logger.WithFields(logrus.Fields{
 			"step":  step,
 			"total": total,
-		}).Info(fmt.Sprintf(format, args...))
+		}).Infof(format, args...)
 	}
 }
 
 func (l *Logger) InfoWithTime(format string, args ...interface{}) {
-	msg := fmt.Sprintf("%s [INFO ] %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
-	l.Logger.Info(msg)
+	// For console output, Logrus's TextFormatter already includes the timestamp
+	l.Logger.Infof(format, args...)
 }
 
-func (l *Logger) StartSpinner(format string, args ...interface{}) chan struct{} {
-	stop := make(chan struct{})
-	go func() {
-		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-		i := 0
-		for {
-			select {
-			case <-stop:
-				fmt.Fprintf(os.Stdout, "\r%-80s\r", "") // Clear line
-				os.Stdout.Sync()                        // Force flush
-				return
-			default:
-				fmt.Fprintf(os.Stdout, "\r%s %s", spinner[i%len(spinner)], fmt.Sprintf(format, args...))
-				os.Stdout.Sync()
-				i++
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-	}()
-	return stop
+func (l *Logger) GetVerbose() bool {
+	return l.config.Verbose
 }
 
-func (l *Logger) StopSpinner(stop chan struct{}, success bool, format string, args ...interface{}) {
-	close(stop)
-	time.Sleep(200 * time.Millisecond) // Increased delay for test environments
-	if success {
-		l.Success(format, args...)
-	} else {
-		l.Error(format, args...)
-	}
-	l.Logger.Out.(*os.File).Sync() // Ensure all logs are flushed
+func (l *Logger) GetQuiet() bool {
+	return l.config.Quiet
 }
 
 func DefaultConfig() Config {
@@ -190,5 +176,6 @@ func DefaultConfig() Config {
 		Verbose: false,
 		LogDir:  "",
 		Quiet:   false,
+		LogFile: "", // Default to empty, will use infinity-metrics-cli.log
 	}
 }
