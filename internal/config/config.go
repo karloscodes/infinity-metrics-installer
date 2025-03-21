@@ -119,7 +119,7 @@ func (c *Config) LoadFromFile(filename string) error {
 		switch key {
 		case "DOMAIN":
 			c.data.Domain = value
-		case "ADMIN_EMAIL":
+		case "INFINITY_METRICS_ADMIN_EMAIL":
 			c.data.AdminEmail = value
 		case "INFINITY_METRICS_LICENSE_KEY":
 			c.data.LicenseKey = value
