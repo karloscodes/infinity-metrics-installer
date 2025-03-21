@@ -245,11 +245,14 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write transitional Caddyfile: %w", err)
 	}
+
 	d.logger.Info("Reloading Caddy with both upstreams...")
+
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with both upstreams: %w", err)
 	}
+
 	d.logger.Success("Caddy updated with both upstreams")
 
 	time.Sleep(2 * time.Second)
@@ -259,11 +262,14 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write final Caddyfile: %w", err)
 	}
+
 	d.logger.Info("Reloading Caddy with new upstream...")
+
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with new upstream: %w", err)
 	}
+
 	d.logger.Success("Caddy updated to new upstream")
 
 	d.StopAndRemove(currentName)

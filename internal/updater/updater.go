@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/database"
@@ -96,7 +97,16 @@ func (u *Updater) Run(currentVersion string) error {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
 				u.logger.Success("Binary updated to version %s, restarting", latestVersion)
-				return exec.Command(BinaryInstallPath, "update").Run()
+
+				// Pass along all original command line args to the new binary
+				originalArgs := os.Args[1:]
+				cmd := exec.Command(BinaryInstallPath, originalArgs...)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Env = os.Environ()
+
+				// Use a timeout to prevent hanging
+				return cmd.Run()
 			}
 		} else {
 			u.logger.Info("Current version %s matches or is newer than latest %s, no binary update needed", currentVersion, latestVersion)
@@ -116,7 +126,13 @@ func (u *Updater) Run(currentVersion string) error {
 
 func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
 	u.logger.Info("Fetching latest release from GitHub: %s", GitHubAPIURL)
-	resp, err := http.Get(GitHubAPIURL)
+
+	// Add a timeout to the HTTP client
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	resp, err := client.Get(GitHubAPIURL)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
@@ -200,7 +216,13 @@ func (u *Updater) update() error {
 
 func (u *Updater) updateBinary(url, binaryPath string) error {
 	u.logger.InfoWithTime("Downloading new installer binary from %s", url)
-	resp, err := http.Get(url)
+
+	// Add a timeout to the HTTP client
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
