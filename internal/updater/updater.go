@@ -6,10 +6,10 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"infinity-metrics-installer/internal/config"
@@ -96,23 +96,28 @@ func (u *Updater) Run(currentVersion string) error {
 			if err := u.updateBinary(downloadURL, BinaryInstallPath); err != nil {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
-				u.logger.Success("Binary updated to version %s, restarting", latestVersion)
+				u.logger.Success("Binary updated to version %s", latestVersion)
+				u.logger.Info("Restarting with new binary...")
 
-				// Pass along all original command line args to the new binary
-				originalArgs := os.Args[1:]
-				cmd := exec.Command(BinaryInstallPath, originalArgs...)
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				cmd.Env = os.Environ()
+				// Get the original arguments that were passed to the current process
+				args := os.Args
 
-				// Use a timeout to prevent hanging
-				return cmd.Run()
+				// Replace the current process with the new binary
+				// This ensures a clean handoff without leaving the old process running
+				err = syscall.Exec(BinaryInstallPath, args, os.Environ())
+				if err != nil {
+					return fmt.Errorf("failed to exec new binary: %w", err)
+				}
+
+				// If syscall.Exec succeeds, we won't reach this point as the process is replaced
+				return nil
 			}
 		} else {
 			u.logger.Info("Current version %s matches or is newer than latest %s, no binary update needed", currentVersion, latestVersion)
 		}
 	}
 
+	// Continue with normal update logic
 	if err := u.update(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}

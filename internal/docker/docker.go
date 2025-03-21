@@ -364,7 +364,7 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 	}
 
 	return fmt.Sprintf(`{
-    admin 127.0.0.1:2019
+    admin 0.0.0.0:2019
     email %s
     log {
         level INFO
