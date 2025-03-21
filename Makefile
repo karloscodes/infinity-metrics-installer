@@ -68,7 +68,7 @@ test-ci: build-linux
 	$(GOTEST) -v ./tests
 	
 # Local testing with multipass
-test-local: build-linux install-multipass
+test-local: clean build-linux install-multipass
 	@echo "Running tests in local environment"
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
