@@ -160,7 +160,9 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 		d.logger.Success("Caddy deployed")
 	} else {
-		d.ensureNetworkConnected(CaddyName, NetworkName)
+		if err := d.ensureNetworkConnected(CaddyName, NetworkName); err != nil {
+			return fmt.Errorf("failed to ensure network for %s: %w", CaddyName, err)
+		}
 	}
 
 	return d.DeployApp(data, AppNamePrimary)
@@ -219,7 +221,10 @@ func (d *Docker) Update(conf *config.Config) error {
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 
-	d.ensureNetworkConnected(newName, NetworkName)
+	if err := d.ensureNetworkConnected(newName, NetworkName); err != nil {
+		d.StopAndRemove(newName)
+		return fmt.Errorf("failed to ensure network for %s: %w", newName, err)
+	}
 
 	d.logger.Info("Checking %s health...", newName)
 	for i := 0; i < HealthCheckTries; i++ {
@@ -312,12 +317,28 @@ func (d *Docker) IsRunning(name string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-func (d *Docker) ensureNetworkConnected(container, network string) {
-	if _, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}"); err == nil {
-		if !strings.Contains(err.Error(), container) {
-			d.RunCommand("network", "connect", network, container)
-		}
+func (d *Docker) ensureNetworkConnected(container, network string) error {
+	// Inspect the network to see if the container is already connected
+	output, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}")
+	if err != nil {
+		return fmt.Errorf("failed to inspect network %s: %w", network, err)
 	}
+
+	// Check if the container is already connected to the network
+	if strings.Contains(output, container) {
+		d.logger.Info("Container %s is already connected to network %s", container, network)
+		return nil
+	}
+
+	// Container is not connected, connect it to the network
+	d.logger.Info("Connecting container %s to network %s...", container, network)
+	_, err = d.RunCommand("network", "connect", network, container)
+	if err != nil {
+		return fmt.Errorf("failed to connect container %s to network %s: %w", container, network, err)
+	}
+	d.logger.Success("Container %s connected to network %s", container, network)
+
+	return nil
 }
 
 func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondaryApp string) string {

@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,12 @@ import (
 	"infinity-metrics-installer/internal/database"
 	"infinity-metrics-installer/internal/docker"
 	"infinity-metrics-installer/internal/logging"
+)
+
+const (
+	GitHubRepo        = "karloscodes/infinity-metrics-installer"
+	GitHubAPIURL      = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest"
+	BinaryInstallPath = "/usr/local/bin/infinity-metrics" // Standard installation path
 )
 
 type Updater struct {
@@ -56,23 +63,43 @@ func (u *Updater) Run(currentVersion string) error {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	latestVersion := extractVersionFromURL(u.config.GetData().InstallerURL)
-	if latestVersion == "" {
-		u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
-	} else if latestVersion == currentVersion {
-		u.logger.Info("Current version %s matches latest %s, no binary update needed", currentVersion, latestVersion)
-	} else {
-		arch := runtime.GOARCH
-		if arch != "amd64" && arch != "arm64" {
-			return fmt.Errorf("unsupported architecture: %s", arch)
+	// Fetch the latest version from GitHub
+	latestVersion, binaryURL, err := u.getLatestVersionAndBinaryURL()
+	if err != nil {
+		u.logger.Warn("Failed to fetch latest version from GitHub: %v", err)
+		// Fall back to using the version from the config
+		latestVersion = extractVersionFromURL(u.config.GetData().InstallerURL)
+		if latestVersion == "" {
+			u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
 		}
-		if data.InstallerURL != "" && data.InstallerURL != fmt.Sprintf("https://github.com/%s/releases/latest", config.GithubRepo) {
-			if err := u.updateBinary(data.InstallerURL, data.InstallDir, arch); err != nil {
+	}
+
+	// Compare versions and update binary if necessary
+	if latestVersion != "" {
+		if compareVersions(currentVersion, latestVersion) < 0 {
+			u.logger.Info("Local version %s is older than latest %s, updating binary...", currentVersion, latestVersion)
+			arch := runtime.GOARCH
+			if arch != "amd64" && arch != "arm64" {
+				return fmt.Errorf("unsupported architecture: %s", arch)
+			}
+
+			// Use the binary URL from GitHub if available, otherwise fall back to InstallerURL
+			downloadURL := binaryURL
+			if downloadURL == "" {
+				downloadURL = u.config.GetData().InstallerURL
+				if downloadURL == "" || downloadURL == fmt.Sprintf("https://github.com/%s/releases/latest", config.GithubRepo) {
+					downloadURL = fmt.Sprintf("https://github.com/%s/releases/download/v%s/infinity-metrics-v%s-%s", GitHubRepo, latestVersion, latestVersion, arch)
+				}
+			}
+
+			if err := u.updateBinary(downloadURL, BinaryInstallPath); err != nil {
 				u.logger.Warn("Failed to update binary: %v", err)
 			} else {
-				u.logger.Success("Binary updated to latest version, restarting")
-				return exec.Command(filepath.Join(data.InstallDir, "infinity-metrics"), "update").Run()
+				u.logger.Success("Binary updated to version %s, restarting", latestVersion)
+				return exec.Command(BinaryInstallPath, "update").Run()
 			}
+		} else {
+			u.logger.Info("Current version %s matches or is newer than latest %s, no binary update needed", currentVersion, latestVersion)
 		}
 	}
 
@@ -85,6 +112,53 @@ func (u *Updater) Run(currentVersion string) error {
 
 	u.logger.Success("Update completed")
 	return nil
+}
+
+func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
+	u.logger.Info("Fetching latest release from GitHub: %s", GitHubAPIURL)
+	resp, err := http.Get(GitHubAPIURL)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to fetch latest release: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("failed to fetch latest release, status: %s", resp.Status)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name       string `json:"name"`
+			BrowserURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", "", fmt.Errorf("failed to parse release JSON: %w", err)
+	}
+
+	// Extract the version from the tag name (e.g., "v1.0.3" -> "1.0.3")
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	if latestVersion == "" {
+		return "", "", fmt.Errorf("invalid version in release tag: %s", release.TagName)
+	}
+
+	// Find the binary for the current architecture
+	arch := runtime.GOARCH
+	expectedAsset := fmt.Sprintf("infinity-metrics-v%s-%s", latestVersion, arch)
+	var binaryURL string
+	for _, asset := range release.Assets {
+		if asset.Name == expectedAsset {
+			binaryURL = asset.BrowserURL
+			break
+		}
+	}
+
+	if binaryURL == "" {
+		return latestVersion, "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
+	}
+
+	return latestVersion, binaryURL, nil
 }
 
 func (u *Updater) update() error {
@@ -124,7 +198,7 @@ func (u *Updater) update() error {
 	return nil
 }
 
-func (u *Updater) updateBinary(url, installDir, arch string) error {
+func (u *Updater) updateBinary(url, binaryPath string) error {
 	u.logger.InfoWithTime("Downloading new installer binary from %s", url)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -136,7 +210,8 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 		return fmt.Errorf("download failed, status: %s", resp.Status)
 	}
 
-	newBinary := filepath.Join(installDir, "infinity-metrics.new")
+	// Use a temporary file in /tmp to avoid permission issues
+	newBinary := filepath.Join("/tmp", "infinity-metrics.new")
 	out, err := os.Create(newBinary)
 	if err != nil {
 		return fmt.Errorf("create new binary: %w", err)
@@ -151,13 +226,46 @@ func (u *Updater) updateBinary(url, installDir, arch string) error {
 		return fmt.Errorf("chmod new binary: %w", err)
 	}
 
-	oldBinary := filepath.Join(installDir, "infinity-metrics")
-	if err := os.Rename(newBinary, oldBinary); err != nil {
+	// Move the new binary to the final location
+	if err := os.Rename(newBinary, binaryPath); err != nil {
 		return fmt.Errorf("replace binary: %w", err)
 	}
 
 	u.logger.Success("Binary updated successfully")
 	return nil
+}
+
+func compareVersions(v1, v2 string) int {
+	// Split version strings into parts
+	v1Parts := strings.Split(v1, ".")
+	v2Parts := strings.Split(v2, ".")
+
+	// Ensure both versions have the same number of parts
+	maxParts := len(v1Parts)
+	if len(v2Parts) > maxParts {
+		maxParts = len(v2Parts)
+	}
+	for i := len(v1Parts); i < maxParts; i++ {
+		v1Parts = append(v1Parts, "0")
+	}
+	for i := len(v2Parts); i < maxParts; i++ {
+		v2Parts = append(v2Parts, "0")
+	}
+
+	// Compare each part
+	for i := 0; i < maxParts; i++ {
+		v1Num := 0
+		v2Num := 0
+		fmt.Sscanf(v1Parts[i], "%d", &v1Num)
+		fmt.Sscanf(v2Parts[i], "%d", &v2Num)
+
+		if v1Num < v2Num {
+			return -1
+		} else if v1Num > v2Num {
+			return 1
+		}
+	}
+	return 0
 }
 
 func extractVersionFromURL(url string) string {

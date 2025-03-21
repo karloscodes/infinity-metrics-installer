@@ -14,7 +14,7 @@ type Config struct {
 	Verbose bool
 	LogDir  string
 	Quiet   bool
-	LogFile string // New field to specify the log file name
+	LogFile string // Specify the log file name
 }
 
 type Logger struct {
