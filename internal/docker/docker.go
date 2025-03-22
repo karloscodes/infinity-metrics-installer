@@ -217,15 +217,6 @@ func (d *Docker) Update(conf *config.Config) error {
 		currentName, newName = newName, AppNamePrimary
 	}
 
-	mainDBPath := filepath.Join(dataDir, "storage", "infinity-metrics-production.db")
-	backupDir := filepath.Join(dataDir, "storage", "backups")
-	d.logger.Info("Backing up database...")
-	if _, err := d.db.BackupDatabase(mainDBPath, backupDir); err != nil {
-		d.logger.Warn("Proceeding without backup: %v", err)
-	} else {
-		d.logger.Success("Database backed up")
-	}
-
 	for i := 0; i < MaxRetries; i++ {
 		if err := d.DeployApp(data, newName); err == nil {
 			d.logger.Success("%s deployed", newName)
