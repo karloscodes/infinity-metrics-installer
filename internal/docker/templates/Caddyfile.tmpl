@@ -1,0 +1,79 @@
+{
+    admin 0.0.0.0:2019
+    email {{.AdminEmail}}
+    log {
+        level INFO
+        output file /data/logs/caddy.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+    }
+    grace_period 30s
+}
+
+{{.Domain}}:80 {
+    # Special handling for ACME HTTP-01 challenges
+    @acme {
+        path /.well-known/acme-challenge/*
+    }
+    handle @acme {
+        root * /data/acme-challenges
+        file_server
+    }
+
+    # Redirect all other HTTP traffic to HTTPS
+    handle {
+        redir https://{{.Domain}}{uri} 301
+    }
+}
+
+{{.Domain}}:443 {
+    tls {{.TLSConfig}}
+    encode zstd gzip
+    
+    file_server /assets/* {
+        precompressed
+    }
+    
+    reverse_proxy {{.Upstreams}} {
+        health_uri /_health
+        health_interval 10s
+        health_timeout 5s
+        health_status 200
+        fail_duration 30s
+        max_fails 2
+        
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {http.request.remote.host}
+        header_up User-Agent {http.request.user_agent}
+        header_up Referer {http.request.referer}
+        header_up Accept-Language {http.request.header.Accept-Language}
+
+        flush_interval -1
+    }
+    
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "microphone=(), camera=()"
+        -Server
+    }
+    
+    log {
+        output file /data/logs/{{.Domain}}-access.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format json
+    }
+    
+    handle_errors {
+        @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} <= 599
+        respond @5xx "Service temporarily unavailable" 503
+    }
+}

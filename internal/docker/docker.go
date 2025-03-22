@@ -2,11 +2,13 @@ package docker
 
 import (
 	"bytes"
+	_ "embed" // Required for embedding Caddyfile template
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template" // Required for template processing
 	"time"
 
 	"infinity-metrics-installer/internal/config"
@@ -22,6 +24,11 @@ const (
 	MaxRetries       = 3
 	HealthCheckTries = 5
 )
+
+// Embed the Caddyfile template
+//
+//go:embed templates/Caddyfile.tmpl
+var caddyfileTemplate string
 
 type Docker struct {
 	logger *logging.Logger
@@ -98,6 +105,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		filepath.Join(dataDir, "logs"),
 		filepath.Join(dataDir, "caddy"),
 		filepath.Join(dataDir, "caddy", "config"),
+		filepath.Join(dataDir, "caddy", "acme-challenges"), // Added for ACME challenges
 		filepath.Join(dataDir, "storage", "backups"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -116,7 +124,10 @@ func (d *Docker) Deploy(conf *config.Config) error {
 
 	// Generate and write Caddyfile
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
-	caddyContent := d.generateCaddyfile(data, AppNamePrimary, "")
+	caddyContent, err := d.generateCaddyfile(data, AppNamePrimary, "")
+	if err != nil {
+		return fmt.Errorf("generate Caddyfile: %w", err)
+	}
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
@@ -147,6 +158,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 			"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
 			"-v", filepath.Join(dataDir, "caddy")+":/data",
 			"-v", filepath.Join(dataDir, "caddy", "config")+":/config",
+			"-v", filepath.Join(dataDir, "caddy", "acme-challenges")+":/data/acme-challenges", // Added for ACME challenges
 			"-v", filepath.Join(dataDir, "logs")+":/data/logs",
 			"-e", "DOMAIN="+data.Domain,
 			"-e", "ADMIN_EMAIL="+data.AdminEmail,
@@ -240,7 +252,11 @@ func (d *Docker) Update(conf *config.Config) error {
 	}
 
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
-	caddyContent := d.generateCaddyfile(data, currentName, newName)
+	caddyContent, err := d.generateCaddyfile(data, currentName, newName)
+	if err != nil {
+		d.StopAndRemove(newName)
+		return fmt.Errorf("generate transitional Caddyfile: %w", err)
+	}
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write transitional Caddyfile: %w", err)
@@ -257,7 +273,11 @@ func (d *Docker) Update(conf *config.Config) error {
 
 	time.Sleep(2 * time.Second)
 
-	caddyContent = d.generateCaddyfile(data, newName, "")
+	caddyContent, err = d.generateCaddyfile(data, newName, "")
+	if err != nil {
+		d.StopAndRemove(newName)
+		return fmt.Errorf("generate final Caddyfile: %w", err)
+	}
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("write final Caddyfile: %w", err)
@@ -380,7 +400,7 @@ func (d *Docker) ensureNetworkConnected(container, network string) error {
 	return nil
 }
 
-func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondaryApp string) string {
+func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondaryApp string) (string, error) {
 	upstreams := primaryApp + ":8080"
 	if secondaryApp != "" {
 		upstreams += " " + secondaryApp + ":8080"
@@ -396,71 +416,29 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		tlsConfig = data.AdminEmail
 	}
 
-	return fmt.Sprintf(`{
-    admin 0.0.0.0:2019
-    email %s
-    log {
-        level INFO
-        output file /data/logs/caddy.log {
-            roll_size 50MiB
-            roll_keep 5
-            roll_keep_for 168h
-        }
-    }
-    grace_period 30s
-}
+	// Create template data structure
+	tplData := struct {
+		AdminEmail string
+		Domain     string
+		TLSConfig  string
+		Upstreams  string
+	}{
+		AdminEmail: data.AdminEmail,
+		Domain:     data.Domain,
+		TLSConfig:  tlsConfig,
+		Upstreams:  upstreams,
+	}
 
-%s:80 {
-    redir https://%s{uri} 301
-}
+	// Parse and execute template
+	tmpl, err := template.New("caddyfile").Parse(caddyfileTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse template: %w", err)
+	}
 
-%s:443 {
-    tls %s
-    encode zstd gzip
-    
-    file_server /assets/* {
-        precompressed
-    }
-    
-    reverse_proxy %s {
-        health_uri /_health
-        health_interval 10s
-        health_timeout 5s
-        health_status 200
-        fail_duration 30s
-        max_fails 2
-        
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {http.request.remote.host}
-        header_up User-Agent {http.request.user_agent}
-        header_up Referer {http.request.referer}
-        header_up Accept-Language {http.request.header.Accept-Language}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, tplData); err != nil {
+		return "", fmt.Errorf("execute template: %w", err)
+	}
 
-        flush_interval -1
-    }
-    
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "microphone=(), camera=()"
-        -Server
-    }
-    
-    log {
-        output file /data/logs/%s-access.log {
-            roll_size 50MiB
-            roll_keep 5
-            roll_keep_for 168h
-        }
-        format json
-    }
-    
-    handle_errors {
-        @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} <= 599
-        respond @5xx "Service temporarily unavailable" 503
-    }
-}`, data.AdminEmail, data.Domain, data.Domain, data.Domain, tlsConfig, upstreams, data.Domain)
+	return buf.String(), nil
 }

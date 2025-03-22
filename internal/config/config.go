@@ -174,6 +174,7 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		// Print collected information and ask for confirmation
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
+		fmt.Printf("%s => %s\n", c.data.Domain, ips)
 		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
 		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
 		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
