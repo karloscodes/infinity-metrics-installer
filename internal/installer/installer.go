@@ -15,7 +15,7 @@ const (
 	DefaultInstallDir   = "/opt/infinity-metrics"
 	DefaultBinaryPath   = "/usr/local/bin/infinity-metrics"
 	DefaultCronFile     = "/etc/cron.d/infinity-metrics-update"
-	DefaultCronSchedule = "0 0 * * *"
+	DefaultCronSchedule = "0 3 * * *"
 )
 
 type Installer struct {
@@ -58,7 +58,7 @@ func (i *Installer) RunWithConfig(cfg *config.Config) error {
 }
 
 func (i *Installer) Run() error {
-	totalSteps := 5
+	totalSteps := 6
 
 	i.logger.Info("Step 1/%d: Checking system privileges", totalSteps)
 	if os.Geteuid() != 0 && os.Getenv("ENV") != "test" {
@@ -117,6 +117,13 @@ func (i *Installer) Run() error {
 	}
 	i.logger.Success("Deployment completed")
 
+	i.logger.Info("Step 6/%d: Creating default admin user", totalSteps)
+	if err := i.createDefaultUser(); err != nil {
+		i.logger.Error("Default user creation failed: %v", err)
+		return fmt.Errorf("failed to create default user: %w", err)
+	}
+	i.logger.Success("Default admin user created successfully")
+
 	i.logger.InfoWithTime("Setting up automated updates")
 	if err := i.setupCronJob(); err != nil {
 		return fmt.Errorf("failed to setup cron: %w", err)
@@ -149,6 +156,24 @@ func (i *Installer) createInstallDir(installDir string) error {
 	return nil
 }
 
+func (i *Installer) createDefaultUser() error {
+	i.logger.InfoWithTime("Creating default admin user")
+
+	data := i.config.GetData()
+
+	// Use the correct path to infinity-metrics-ctl in the container
+	err := i.docker.ExecuteCommand(
+		"/app/infinity-metrics-ctl", "setup-initial-user",
+		data.AdminEmail,
+		data.AdminPassword)
+	if err != nil {
+		return fmt.Errorf("failed to create admin user: %w", err)
+	}
+
+	i.logger.Success("Admin user created with email: %s", data.AdminEmail)
+	return nil
+}
+
 func (i *Installer) setupCronJob() error {
 	if os.Getenv("ENV") == "test" {
 		i.logger.InfoWithTime("Skipping cron setup in test environment")
@@ -164,6 +189,6 @@ func (i *Installer) setupCronJob() error {
 		return fmt.Errorf("failed to write cron file %s: %w", cronFile, err)
 	}
 	i.logger.Success("Cron job setup complete")
-	i.logger.InfoWithTime("Automatic updates scheduled for midnight daily")
+	i.logger.InfoWithTime("Automatic updates scheduled for 3:00 AM daily")
 	return nil
 }

@@ -323,6 +323,39 @@ func (d *Docker) IsRunning(name string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+// ExecuteCommand runs a command inside the app container
+func (d *Docker) ExecuteCommand(command ...string) error {
+	// Determine which app container is running
+	containerName := AppNamePrimary
+	if !d.IsRunning(containerName) {
+		containerName = AppNameSecondary
+		if !d.IsRunning(containerName) {
+			return fmt.Errorf("no running app container found")
+		}
+	}
+
+	args := []string{"exec", containerName}
+	args = append(args, command...)
+
+	d.logger.Debug("Executing in app container %s: %s", containerName, strings.Join(command, " "))
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("docker", args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to execute in container %s: %w - %s",
+			containerName, err, stderr.String())
+	}
+
+	if stdout.Len() > 0 {
+		d.logger.Debug("Command output: %s", stdout.String())
+	}
+
+	return nil
+}
+
 func (d *Docker) ensureNetworkConnected(container, network string) error {
 	// Inspect the network to see if the container is already connected
 	output, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}")

@@ -171,7 +171,26 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		// Update BackupPath based on InstallDir
 		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
-		break
+		// Print collected information and ask for confirmation
+		fmt.Println("\nConfiguration Summary:")
+		fmt.Printf("Domain: %s\n", c.data.Domain)
+		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
+		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
+		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
+		fmt.Printf("Backup Path: %s\n", c.data.BackupPath)
+
+		fmt.Print("\nProceed with this configuration? [Y/n]: ")
+		confirmStr, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read confirmation: %w", err)
+		}
+
+		confirmStr = strings.TrimSpace(strings.ToLower(confirmStr))
+		if confirmStr == "y" || confirmStr == "yes" || confirmStr == "" {
+			break // Exit the main collection loop
+		}
+
+		fmt.Println("Configuration declined. Let's start over.")
 	}
 
 	c.logger.Success("Configuration collected from user")
