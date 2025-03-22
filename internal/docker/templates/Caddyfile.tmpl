@@ -23,9 +23,9 @@
     }
 
     # Redirect all other HTTP traffic to HTTPS
-    handle {
-        redir https://{{.Domain}}{uri} 301
-    }
+    # handle {
+    #     redir https://{{.Domain}}{uri} 301
+    # }
 }
 
 {{.Domain}}:443 {

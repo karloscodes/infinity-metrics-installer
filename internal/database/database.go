@@ -166,8 +166,8 @@ func (d *Database) PromptSelection(backups []BackupFile) (string, error) {
 }
 
 // ValidateBackup checks if a backup file is valid and not corrupted
-func (d *Database) ValidateBackup(backupPath string) error {
-	stat, err := os.Stat(backupPath)
+func (d *Database) ValidateBackup(backupFile string) error {
+	stat, err := os.Stat(backupFile)
 	if err != nil {
 		return fmt.Errorf("cannot access backup: %w", err)
 	}
@@ -175,16 +175,25 @@ func (d *Database) ValidateBackup(backupPath string) error {
 		return fmt.Errorf("backup file is empty")
 	}
 
-	// SQLite integrity check
-	cmd := exec.Command("sqlite3", backupPath, ".dbinfo")
-	var stderr bytes.Buffer
+	// SQLite integrity check using PRAGMA integrity_check
+	cmd := exec.Command("sqlite3", backupFile, "PRAGMA integrity_check;")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
 	if err := cmd.Run(); err != nil {
 		d.logger.Warn("SQLite integrity check failed: %s", stderr.String())
 		return fmt.Errorf("backup may be corrupted: %w", err)
 	}
 
-	d.logger.Debug("Backup file %s validated successfully", backupPath)
+	// Check the output - it should be "ok" for a valid database
+	output := strings.TrimSpace(stdout.String())
+	if output != "ok" {
+		d.logger.Warn("SQLite integrity check returned issues: %s", output)
+		return fmt.Errorf("backup integrity issues detected")
+	}
+
+	d.logger.Debug("Backup file %s validated successfully", backupFile)
 	return nil
 }
 
