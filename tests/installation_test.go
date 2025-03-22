@@ -19,6 +19,7 @@ import (
 
 func TestInstallation(t *testing.T) {
 	os.Setenv("ENV", "test")
+
 	projectRoot, err := filepath.Abs("..")
 	require.NoError(t, err, "Failed to find project root")
 
@@ -53,9 +54,7 @@ func TestInstallation(t *testing.T) {
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
 	licenseKey := os.Getenv("LICENSE_KEY")
-	if licenseKey == "" {
-		licenseKey = "TEST-LICENSE-KEY"
-	}
+
 	// Updated StdinInput to provide a valid email and confirm with the default "y"
 	config.StdinInput = fmt.Sprintf(
 		"localhost\n"+ // Domain
@@ -69,6 +68,16 @@ func TestInstallation(t *testing.T) {
 	runner := testrunner.NewTestRunner(config)
 	os.Setenv("KEEP_VM", "1")
 	defer os.Setenv("KEEP_VM", os.Getenv("KEEP_VM"))
+
+	if isRunningInCI() {
+		// In CI, set the env var in the current process
+		os.Setenv("ADMIN_PASSWORD", "securepassword123")
+		defer os.Unsetenv("ADMIN_PASSWORD")
+		t.Log("Set ADMIN_PASSWORD in CI environment")
+	} else {
+		config.EnvVars["ADMIN_PASSWORD"] = "securepassword123"
+		t.Log("Added ADMIN_PASSWORD to VM environment")
+	}
 
 	err = runner.Run()
 	outputStr := runner.Stdout()

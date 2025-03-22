@@ -130,7 +130,7 @@ func printUsage(logger *logging.Logger) {
 	fmt.Printf("  Infinity Metrics Installer v%s - https://getinfinitymetrics.com\n", currentInstallerVersion)
 	fmt.Println("------------------------------------------------------------------")
 	fmt.Println("\nUsage:")
-	fmt.Println("  infinity-metrics-installer [command] [flags]")
+	fmt.Println("  infinity-metrics-installer [command]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  install  Install Infinity Metrics")
 	fmt.Println("  update   Update Infinity Metrics")

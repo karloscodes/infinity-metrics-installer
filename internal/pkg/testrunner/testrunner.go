@@ -76,6 +76,7 @@ func NewTestRunner(config Config) *TestRunner {
 func (r *TestRunner) Run() error {
 	r.logf("Starting test in %s environment", r.env)
 	r.logf("Binary path: %s", r.Config.BinaryPath)
+	r.logf("Environment variables: %v", r.Config.EnvVars)
 
 	if r.env == CIEnvironment {
 		return r.runInCI()
@@ -214,6 +215,17 @@ func (r *TestRunner) runLocally() error {
 
 	// Run the command in VM
 	r.logf("Running command in VM: infinity-metrics %s", strings.Join(r.Config.Args, " "))
+
+	// Set environment variables in the VM before running the command
+	for k, v := range r.Config.EnvVars {
+		r.logf("Setting environment variable in VM: %s=%s", k, v)
+		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
+			fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
+		envOutput, err := envCmd.CombinedOutput()
+		if err != nil {
+			r.logf("Failed to set environment variable %s: %v\nOutput: %s", k, err, string(envOutput))
+		}
+	}
 
 	// Create the command to run with stdin input
 	cmdParts := []string{"exec", r.Config.VMName, "--", "sudo", "/usr/local/bin/infinity-metrics"}

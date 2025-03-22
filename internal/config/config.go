@@ -11,6 +11,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
+
+	"golang.org/x/term"
 
 	"infinity-metrics-installer/internal/logging"
 )
@@ -20,15 +23,16 @@ const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
-	Domain       string // Local: User-provided
-	AdminEmail   string // Local: User-provided
-	LicenseKey   string // Local: User-provided
-	AppImage     string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage   string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
-	InstallDir   string // Default: e.g., "/opt/infinity-metrics"
-	BackupPath   string // Default: SQLite backup location
-	Version      string // GitHub Release: Version of the infinity-metrics binary (optional)
-	InstallerURL string // GitHub Release: URL to download new infinity-metrics binary
+	Domain        string // Local: User-provided
+	AdminEmail    string // Local: User-provided
+	LicenseKey    string // Local: User-provided
+	AdminPassword string // Local: User-provided, held in memory only
+	AppImage      string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage    string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
+	InstallDir    string // Default: e.g., "/opt/infinity-metrics"
+	BackupPath    string // Default: SQLite backup location
+	Version       string // GitHub Release: Version of the infinity-metrics binary (optional)
+	InstallerURL  string // GitHub Release: URL to download new infinity-metrics binary
 }
 
 // Config manages configuration
@@ -42,15 +46,16 @@ func NewConfig(logger *logging.Logger) *Config {
 	return &Config{
 		logger: logger,
 		data: ConfigData{
-			Domain:       "", // Required from user
-			AdminEmail:   "", // Required from user
-			LicenseKey:   "", // Required from user
-			AppImage:     "karloscodes/infinity-metrics-beta:latest",
-			CaddyImage:   "caddy:2.7-alpine",
-			InstallDir:   "/opt/infinity-metrics",
-			BackupPath:   "/opt/infinity-metrics/storage/backups",
-			Version:      "latest",
-			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
+			Domain:        "", // Required from user
+			AdminEmail:    "", // Required from user
+			AdminPassword: "", // Required from user, held in memory
+			LicenseKey:    "", // Required from user
+			AppImage:      "karloscodes/infinity-metrics-beta:latest",
+			CaddyImage:    "caddy:2.7-alpine",
+			InstallDir:    "/opt/infinity-metrics",
+			BackupPath:    "/opt/infinity-metrics/storage/backups",
+			Version:       "latest",
+			InstallerURL:  fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
 		},
 	}
 }
@@ -62,6 +67,7 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		c.data.Domain = ""
 		c.data.AdminEmail = ""
 		c.data.LicenseKey = ""
+		c.data.AdminPassword = ""
 		c.data.InstallDir = "/opt/infinity-metrics" // Reset to default
 
 		// Collect domain
@@ -118,56 +124,58 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		// Optional InstallDir prompt
-		// fmt.Printf("Enter install directory [%s]: ", c.data.InstallDir)
-		// input, err := reader.ReadString('\n')
-		// if err != nil {
-		// 	return fmt.Errorf("failed to read install directory: %w", err)
-		// }
-		// if input = strings.TrimSpace(input); input != "" {
-		// 	c.data.InstallDir = input
-		// }
+		// Check if ADMIN_PASSWORD environment variable is set
+		adminPassword := os.Getenv("ADMIN_PASSWORD")
+		if adminPassword != "" {
+			// Use the password from the environment variable
+			c.data.AdminPassword = adminPassword
+			c.logger.Info("Using admin password from environment variable")
+		} else {
+			// Collect password with masking
+			for {
+				fmt.Print("Enter admin password (minimum 8 characters): ")
+				passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+				if err != nil {
+					return fmt.Errorf("failed to read password: %w", err)
+				}
+				fmt.Println() // Add a newline after password input
+
+				c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
+				if c.data.AdminPassword == "" {
+					fmt.Println("Error: Password cannot be empty.")
+					continue
+				}
+				if len(c.data.AdminPassword) < 8 {
+					fmt.Println("Error: Password must be at least 8 characters long.")
+					continue
+				}
+
+				// Collect confirmation password
+				fmt.Print("Confirm admin password: ")
+				confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
+				if err != nil {
+					return fmt.Errorf("failed to read confirmation password: %w", err)
+				}
+				fmt.Println() // Add a newline after password input
+
+				confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
+
+				if c.data.AdminPassword != confirmPassword {
+					fmt.Println("Error: Passwords do not match. Please try again.")
+					continue
+				}
+				break // Passwords match, exit the password collection loop
+			}
+		}
 
 		// Update BackupPath based on InstallDir
 		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
-		// Confirm configuration with user
-		confirmed, err := c.confirmConfiguration(reader, ips)
-		if err != nil {
-			return err
-		}
-		if confirmed {
-			break // Exit the loop if the user confirms
-		}
-		fmt.Println("Configuration not confirmed, restarting.")
+		break
 	}
 
 	c.logger.Success("Configuration collected from user")
 	return nil
-}
-
-func (c *Config) confirmConfiguration(reader *bufio.Reader, domainIPs []net.IP) (bool, error) {
-	fmt.Println("\nPlease confirm the following configuration")
-	fmt.Printf("Domain: %s\n", c.data.Domain)
-	fmt.Printf("Resolves to IP addresses: %v\n", domainIPs)
-	fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
-	fmt.Printf("License Key: %s\n", c.data.LicenseKey)
-	fmt.Printf("Install Directory: %s\n", c.data.InstallDir)
-
-	// Indicate that 'y' is the default by using [y/n] with 'y' capitalized
-	fmt.Print("\nDo you want to proceed? [Y/n]: ")
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return false, fmt.Errorf("failed to read confirmation: %w", err)
-	}
-	input = strings.TrimSpace(input)
-
-	// Treat empty input as 'y' (default)
-	if input == "" {
-		input = "y"
-	}
-
-	return strings.ToLower(input) == "y", nil
 }
 
 // LoadFromFile loads local config from .env
@@ -362,6 +370,9 @@ func (c *Config) Validate() error {
 	}
 	if c.data.LicenseKey == "" {
 		return fmt.Errorf("license key is required")
+	}
+	if c.data.AdminPassword == "" {
+		return fmt.Errorf("password is required")
 	}
 	if c.data.AppImage == "" {
 		return fmt.Errorf("app image is required")
