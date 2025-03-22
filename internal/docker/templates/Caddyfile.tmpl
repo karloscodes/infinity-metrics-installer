@@ -12,11 +12,19 @@
     grace_period 30s
 }
 
+# HTTP (port 80) - No explicit ACME handling, Caddy will handle it automatically
 {{.Domain}}:80 {
+    # Removed explicit ACME challenge handling
+    # Caddy will automatically handle /.well-known/acme-challenge/* requests
 }
 
+# HTTPS (port 443)
 {{.Domain}}:443 {
-    tls {{.TLSConfig}}
+    {{if eq .TLSConfig "internal"}}
+    tls internal
+    {{else}}
+    tls {{.AdminEmail}}
+    {{end}}
     encode zstd gzip
     
     file_server /assets/* {
