@@ -103,13 +103,12 @@ func (u *Updater) Run(currentVersion string) error {
 				args := os.Args
 
 				// Replace the current process with the new binary
-				// This ensures a clean handoff without leaving the old process running
 				err = syscall.Exec(BinaryInstallPath, args, os.Environ())
 				if err != nil {
 					return fmt.Errorf("failed to exec new binary: %w", err)
 				}
 
-				// If syscall.Exec succeeds, we won't reach this point as the process is replaced
+				// If syscall.Exec succeeds, we won't reach this point
 				return nil
 			}
 		} else {
@@ -117,7 +116,6 @@ func (u *Updater) Run(currentVersion string) error {
 		}
 	}
 
-	// Continue with normal update logic
 	if err := u.update(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
@@ -198,6 +196,8 @@ func (u *Updater) update() error {
 	}
 
 	u.logger.Info("Step 3/%d: Applying updates", totalSteps)
+
+	// Backup the database right before applying the new Docker image
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {

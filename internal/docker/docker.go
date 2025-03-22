@@ -311,7 +311,7 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 		"--network", NetworkName,
 		"-v", filepath.Join(data.InstallDir, "storage")+":/app/storage",
 		"-v", filepath.Join(data.InstallDir, "logs")+":/app/logs",
-		"-e", "INFINITY_METRICS_LOG_LEVEL=info",
+		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
 		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
 		"-e", "SERVER_INSTANCE_ID="+name,
