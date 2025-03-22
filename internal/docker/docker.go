@@ -105,7 +105,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		filepath.Join(dataDir, "logs"),
 		filepath.Join(dataDir, "caddy"),
 		filepath.Join(dataDir, "caddy", "config"),
-		filepath.Join(dataDir, "caddy", "acme-challenges"), // Added for ACME challenges
 		filepath.Join(dataDir, "storage", "backups"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -158,7 +157,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 			"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
 			"-v", filepath.Join(dataDir, "caddy")+":/data",
 			"-v", filepath.Join(dataDir, "caddy", "config")+":/config",
-			"-v", filepath.Join(dataDir, "caddy", "acme-challenges")+":/data/acme-challenges", // Added for ACME challenges
 			"-v", filepath.Join(dataDir, "logs")+":/data/logs",
 			"-e", "DOMAIN="+data.Domain,
 			"-e", "ADMIN_EMAIL="+data.AdminEmail,
@@ -176,6 +174,14 @@ func (d *Docker) Deploy(conf *config.Config) error {
 			return fmt.Errorf("failed to ensure network for %s: %w", CaddyName, err)
 		}
 	}
+
+	// Ensure the /data directory is writable for Caddy to handle ACME challenges
+	d.logger.Info("Ensuring /data directory is writable in %s container...", CaddyName)
+	_, err = d.RunCommand("exec", CaddyName, "chmod", "-R", "755", "/data")
+	if err != nil {
+		return fmt.Errorf("failed to set permissions on /data directory in %s container: %w", CaddyName, err)
+	}
+	d.logger.Success("/data directory permissions ensured")
 
 	return d.DeployApp(data, AppNamePrimary)
 }
@@ -326,6 +332,15 @@ func (d *Docker) StopAndRemove(name string) {
 }
 
 func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
+	// Ensure the /data directory is writable for Caddy to handle ACME challenges
+	d.logger.Info("Ensuring /data directory is writable in %s container...", caddyName)
+	_, err := d.RunCommand("exec", caddyName, "chmod", "-R", "755", "/data")
+	if err != nil {
+		return fmt.Errorf("failed to set permissions on /data directory in %s container: %w", caddyName, err)
+	}
+	d.logger.Success("/data directory permissions ensured")
+
+	// Reload Caddy with the new configuration
 	var buf bytes.Buffer
 	buf.WriteString(caddyConfig)
 	cmd := exec.Command("docker", "exec", caddyName, "caddy", "reload", "--config", "/dev/stdin")
@@ -406,6 +421,7 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		upstreams += " " + secondaryApp + ":8080"
 	}
 
+	// Determine TLS configuration based on environment
 	env := os.Getenv("ENV")
 	var tlsConfig string
 	if env == "test" {
@@ -413,7 +429,7 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		tlsConfig = "internal"
 	} else {
 		d.logger.Info("Using Let's Encrypt for production environment")
-		tlsConfig = data.AdminEmail
+		tlsConfig = data.AdminEmail // Use the admin email directly for tls directive
 	}
 
 	// Create template data structure
