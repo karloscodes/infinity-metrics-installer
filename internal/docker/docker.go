@@ -305,6 +305,7 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
 		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
+		"-e", "INFINITY_METRICS_DOMAIN="+data.Domain,
 		"-e", "SERVER_INSTANCE_ID="+name,
 		"--memory=512m",
 		"--restart", "unless-stopped",
