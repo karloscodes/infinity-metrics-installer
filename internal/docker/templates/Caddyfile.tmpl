@@ -13,19 +13,6 @@
 }
 
 {{.Domain}}:80 {
-    # Special handling for ACME HTTP-01 challenges
-    @acme {
-        path /.well-known/acme-challenge/*
-    }
-    handle @acme {
-        root * /data/acme-challenges
-        file_server
-    }
-
-    # Redirect all other HTTP traffic to HTTPS
-    # handle {
-    #     redir https://{{.Domain}}{uri} 301
-    # }
 }
 
 {{.Domain}}:443 {
