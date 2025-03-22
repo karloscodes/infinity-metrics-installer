@@ -56,11 +56,12 @@ func TestInstallation(t *testing.T) {
 	if licenseKey == "" {
 		licenseKey = "TEST-LICENSE-KEY"
 	}
+	// Updated StdinInput to provide a valid email and confirm with the default "y"
 	config.StdinInput = fmt.Sprintf(
-		"localhost\n"+
-			"admin@localhost\n"+
-			"%s\n"+
-			"\n",
+		"localhost\n"+ // Domain
+			"admin@example.com\n"+ // Valid email
+			"%s\n"+ // License key
+			"\n", // Confirmation (accept default "y")
 		licenseKey)
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
@@ -79,11 +80,10 @@ func TestInstallation(t *testing.T) {
 
 	// Robust assertions
 	require.NoError(t, err, "Installation should complete without error")
-	// assert.NotContains(t, outputStr, "ERROR", "Installer should not return errors")
-	// assert.Contains(t, outputStr, "✔ Configuration collected from user", "Configuration should be collected")
-	// assert.Contains(t, outputStr, "✔ Installation completed in", "Installation should complete successfully")
-	// assert.Contains(t, outputStr, "Access your dashboard at https://localhost", "Config should apply domain")
-
+	assert.Contains(t, outputStr, "✔ Configuration collected from user", "Configuration should be collected")
+	assert.Contains(t, outputStr, "✔ Installation completed in", "Installation should complete successfully")
+	assert.Contains(t, outputStr, "Access your dashboard at https://localhost", "Config should apply domain")
+	// Verify the new confirmation prompt and domain resolution
 	t.Log("Testing service availability...")
 	testServiceAvailability(t, isRunningInCI(), config.VMName)
 

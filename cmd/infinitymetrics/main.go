@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -47,12 +48,16 @@ func main() {
 
 	switch command {
 	case "install":
+		logger.Debug("Starting 'install' command")
 		runInstall(inst, logger, startTime)
 	case "update":
+		logger.Debug("Starting 'update' command")
 		runUpdate(inst, logger, startTime)
 	case "restore":
+		logger.Debug("Starting 'restore' command")
 		runRestore(inst, logger, startTime)
 	case "help":
+		logger.Debug("Starting 'help' command")
 		printUsage(logger)
 		os.Exit(0)
 	default:
@@ -66,9 +71,12 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 	fmt.Println("Starting Infinity Metrics Installation")
 	logger.Debug("Initializing installation environment")
 
+	// Create a bufio.Reader to read user input from stdin
+	reader := bufio.NewReader(os.Stdin)
+
 	fmt.Println("Please provide the required configuration details:")
 	config := config.NewConfig(logger)
-	if err := config.CollectFromUser(); err != nil {
+	if err := config.CollectFromUser(reader); err != nil {
 		logger.Error("Failed to collect configuration: %v", err)
 		os.Exit(1)
 	}
@@ -115,8 +123,6 @@ func runRestore(inst *installer.Installer, logger *logging.Logger, startTime tim
 
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Restore completed in %s", elapsedTime)
-	data := inst.GetConfig().GetData()
-	logger.InfoWithTime("Infinity Metrics restored, access at https://%s", data.Domain)
 }
 
 func printUsage(logger *logging.Logger) {
@@ -128,16 +134,9 @@ func printUsage(logger *logging.Logger) {
 	fmt.Println("\nCommands:")
 	fmt.Println("  install  Install Infinity Metrics")
 	fmt.Println("  update   Update Infinity Metrics")
-	fmt.Println("  restore  Restore Infinity Metrics")
+	fmt.Println("  restore  Restore the last database backup")
 	fmt.Println("  help     Show this help message")
 	fmt.Println("\nFlags:")
 	flag.PrintDefaults()
 	fmt.Println("------------------------------------------------------------------")
-}
-
-func Ternary(condition bool, trueVal, falseVal string) string {
-	if condition {
-		return trueVal
-	}
-	return falseVal
 }

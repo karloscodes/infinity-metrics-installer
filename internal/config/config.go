@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -54,46 +56,118 @@ func NewConfig(logger *logging.Logger) *Config {
 }
 
 // CollectFromUser gets required user input upfront
-func (c *Config) CollectFromUser() error {
-	reader := bufio.NewReader(os.Stdin)
-	for _, p := range []struct {
-		prompt string
-		field  *string
-	}{
-		{"Enter your domain name (e.g., analytics.example.com):", &c.data.Domain},
-		{"Enter admin email address:", &c.data.AdminEmail},
-		{"Enter your Infinity Metrics license key:", &c.data.LicenseKey},
-	} {
-		// Use fmt.Print instead of logger.Info for prompts
-		fmt.Print(p.prompt + " ")
-		input, err := reader.ReadString('\n')
+func (c *Config) CollectFromUser(reader *bufio.Reader) error {
+	for {
+		// Reset fields to ensure a fresh start if the user doesn't confirm
+		c.data.Domain = ""
+		c.data.AdminEmail = ""
+		c.data.LicenseKey = ""
+		c.data.InstallDir = "/opt/infinity-metrics" // Reset to default
+
+		// Collect domain
+		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
+		domain, err := reader.ReadString('\n')
 		if err != nil {
-			return fmt.Errorf("failed to read input for %s: %w", p.prompt, err)
+			return fmt.Errorf("failed to read domain: %w", err)
 		}
-		*p.field = strings.TrimSpace(input)
-		if *p.field == "" {
-			return fmt.Errorf("input for %s cannot be empty", p.prompt)
+		c.data.Domain = strings.TrimSpace(domain)
+		if c.data.Domain == "" {
+			fmt.Println("Error: Domain cannot be empty.")
+			continue
 		}
-		// Log the input value without [INFO] for cleaner UX
-		fmt.Printf("%s\n", *p.field)
-	}
 
-	// Optional InstallDir prompt
-	fmt.Printf("Enter install directory [%s]: ", c.data.InstallDir)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("failed to read install directory: %w", err)
-	}
-	if input = strings.TrimSpace(input); input != "" {
-		c.data.InstallDir = input
-	}
-	fmt.Printf("%s\n", c.data.InstallDir)
+		// Validate domain with A/AAAA records
+		ips, err := net.LookupIP(c.data.Domain)
+		if err != nil {
+			fmt.Printf("Error: Invalid domain: %v\n", err)
+			continue
+		}
+		if len(ips) == 0 {
+			fmt.Println("Error: No A/AAAA records found for the domain. Please set up the DNS records and try again.")
+			continue
+		}
 
-	// Update BackupPath based on InstallDir
-	c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+		// Collect admin email
+		fmt.Print("Enter admin email address: ")
+		adminEmail, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read admin email: %w", err)
+		}
+		c.data.AdminEmail = strings.TrimSpace(adminEmail)
+		if c.data.AdminEmail == "" {
+			fmt.Println("Error: Admin email cannot be empty.")
+			continue
+		}
+
+		// Validate email with regex
+		emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+		if !emailRegex.MatchString(c.data.AdminEmail) {
+			fmt.Println("Error: Invalid email address. Please enter a valid email (e.g., user@example.com).")
+			continue
+		}
+
+		// Collect license key
+		fmt.Print("Enter your Infinity Metrics license key: ")
+		licenseKey, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read license key: %w", err)
+		}
+		c.data.LicenseKey = strings.TrimSpace(licenseKey)
+		if c.data.LicenseKey == "" {
+			fmt.Println("Error: License key cannot be empty.")
+			continue
+		}
+
+		// Optional InstallDir prompt
+		// fmt.Printf("Enter install directory [%s]: ", c.data.InstallDir)
+		// input, err := reader.ReadString('\n')
+		// if err != nil {
+		// 	return fmt.Errorf("failed to read install directory: %w", err)
+		// }
+		// if input = strings.TrimSpace(input); input != "" {
+		// 	c.data.InstallDir = input
+		// }
+
+		// Update BackupPath based on InstallDir
+		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+
+		// Confirm configuration with user
+		confirmed, err := c.confirmConfiguration(reader, ips)
+		if err != nil {
+			return err
+		}
+		if confirmed {
+			break // Exit the loop if the user confirms
+		}
+		fmt.Println("Configuration not confirmed, restarting.")
+	}
 
 	c.logger.Success("Configuration collected from user")
 	return nil
+}
+
+func (c *Config) confirmConfiguration(reader *bufio.Reader, domainIPs []net.IP) (bool, error) {
+	fmt.Println("\nPlease confirm the following configuration")
+	fmt.Printf("Domain: %s\n", c.data.Domain)
+	fmt.Printf("Resolves to IP addresses: %v\n", domainIPs)
+	fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
+	fmt.Printf("License Key: %s\n", c.data.LicenseKey)
+	fmt.Printf("Install Directory: %s\n", c.data.InstallDir)
+
+	// Indicate that 'y' is the default by using [y/n] with 'y' capitalized
+	fmt.Print("\nDo you want to proceed? [Y/n]: ")
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("failed to read confirmation: %w", err)
+	}
+	input = strings.TrimSpace(input)
+
+	// Treat empty input as 'y' (default)
+	if input == "" {
+		input = "y"
+	}
+
+	return strings.ToLower(input) == "y", nil
 }
 
 // LoadFromFile loads local config from .env
