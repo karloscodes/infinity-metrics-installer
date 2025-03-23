@@ -12,10 +12,9 @@
     grace_period 30s
 }
 
-# HTTP (port 80) - No explicit ACME handling, Caddy will handle it automatically
+# HTTP (port 80)
 {{.Domain}}:80 {
-    # Removed explicit ACME challenge handling
-    # Caddy will automatically handle /.well-known/acme-challenge/* requests
+    # Caddy handles ACME challenges automatically
 }
 
 # HTTPS (port 443)
@@ -31,7 +30,7 @@
         precompressed
     }
     
-    reverse_proxy {{.Upstreams}} {
+    reverse_proxy infinity-app-1:8080 infinity-app-2:8080 {
         health_uri /_health
         health_interval 10s
         health_timeout 5s
