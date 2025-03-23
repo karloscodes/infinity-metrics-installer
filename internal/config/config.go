@@ -63,14 +63,12 @@ func NewConfig(logger *logging.Logger) *Config {
 // CollectFromUser gets required user input upfront
 func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 	for {
-		// Reset fields to ensure a fresh start if the user doesn't confirm
 		c.data.Domain = ""
 		c.data.AdminEmail = ""
 		c.data.LicenseKey = ""
 		c.data.AdminPassword = ""
-		c.data.InstallDir = "/opt/infinity-metrics" // Reset to default
+		c.data.InstallDir = "/opt/infinity-metrics"
 
-		// Collect domain
 		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
 		domain, err := reader.ReadString('\n')
 		if err != nil {
@@ -82,7 +80,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		// Validate domain with A/AAAA records
 		ips, err := net.LookupIP(c.data.Domain)
 		if err != nil {
 			fmt.Printf("Error: Invalid domain: %v\n", err)
@@ -93,7 +90,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		// Collect admin email
 		fmt.Print("Enter admin email address: ")
 		adminEmail, err := reader.ReadString('\n')
 		if err != nil {
@@ -105,14 +101,12 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		// Validate email with regex
 		emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 		if !emailRegex.MatchString(c.data.AdminEmail) {
 			fmt.Println("Error: Invalid email address. Please enter a valid email (e.g., user@example.com).")
 			continue
 		}
 
-		// Collect license key
 		fmt.Print("Enter your Infinity Metrics license key: ")
 		licenseKey, err := reader.ReadString('\n')
 		if err != nil {
@@ -124,21 +118,18 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		// Check if ADMIN_PASSWORD environment variable is set
 		adminPassword := os.Getenv("ADMIN_PASSWORD")
 		if adminPassword != "" {
-			// Use the password from the environment variable
 			c.data.AdminPassword = adminPassword
 			c.logger.Info("Using admin password from environment variable")
 		} else {
-			// Collect password with masking
 			for {
 				fmt.Print("Enter admin password (minimum 8 characters): ")
 				passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
 				if err != nil {
 					return fmt.Errorf("failed to read password: %w", err)
 				}
-				fmt.Println() // Add a newline after password input
+				fmt.Println()
 
 				c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
 				if c.data.AdminPassword == "" {
@@ -150,28 +141,24 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 					continue
 				}
 
-				// Collect confirmation password
 				fmt.Print("Confirm admin password: ")
 				confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
 				if err != nil {
 					return fmt.Errorf("failed to read confirmation password: %w", err)
 				}
-				fmt.Println() // Add a newline after password input
+				fmt.Println()
 
 				confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
-
 				if c.data.AdminPassword != confirmPassword {
 					fmt.Println("Error: Passwords do not match. Please try again.")
 					continue
 				}
-				break // Passwords match, exit the password collection loop
+				break
 			}
 		}
 
-		// Update BackupPath based on InstallDir
 		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
-		// Print collected information and ask for confirmation
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
 		fmt.Printf("%s => %s\n", c.data.Domain, ips)
@@ -188,7 +175,7 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 
 		confirmStr = strings.TrimSpace(strings.ToLower(confirmStr))
 		if confirmStr == "y" || confirmStr == "yes" || confirmStr == "" {
-			break // Exit the main collection loop
+			break
 		}
 
 		fmt.Println("Configuration declined. Let's start over.")
@@ -286,7 +273,7 @@ func (c *Config) FetchFromServer(_ string) error {
 	defer resp.Body.Close()
 
 	var release struct {
-		TagName string `json:"tag_name"` // e.g., "v1.0.0"
+		TagName string `json:"tag_name"`
 		Assets  []struct {
 			Name        string `json:"name"`
 			DownloadURL string `json:"browser_download_url"`
@@ -298,7 +285,6 @@ func (c *Config) FetchFromServer(_ string) error {
 		return nil
 	}
 
-	// Extract version from tag_name
 	version := strings.TrimPrefix(release.TagName, "v")
 	if version == "" {
 		c.logger.Warn("No valid version found in release tag: %s", release.TagName)
@@ -306,7 +292,6 @@ func (c *Config) FetchFromServer(_ string) error {
 		return nil
 	}
 
-	// Find config.json and binary URLs
 	var configURL string
 	binaryName := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
 	var binaryURL string
@@ -320,7 +305,6 @@ func (c *Config) FetchFromServer(_ string) error {
 		}
 	}
 
-	// Fetch config.json if available
 	if configURL != "" {
 		if err := c.fetchConfigJSON(configURL); err != nil {
 			c.logger.Warn("Failed to fetch config.json from %s: %v", configURL, err)
@@ -329,7 +313,6 @@ func (c *Config) FetchFromServer(_ string) error {
 		c.logger.Warn("config.json not found in latest release assets")
 	}
 
-	// Update fields from release
 	c.data.Version = version
 	if binaryURL != "" {
 		c.data.InstallerURL = binaryURL
@@ -358,7 +341,6 @@ func (c *Config) fetchConfigJSON(url string) error {
 		return fmt.Errorf("failed to decode config.json: %w", err)
 	}
 
-	// Update fields only if provided
 	if serverData.AppImage != "" {
 		c.data.AppImage = serverData.AppImage
 	}
@@ -373,6 +355,12 @@ func (c *Config) fetchConfigJSON(url string) error {
 // GetData returns the config data
 func (c *Config) GetData() ConfigData {
 	return c.data
+}
+
+// SetCaddyImage sets the CaddyImage field in ConfigData
+func (c *Config) SetCaddyImage(image string) {
+	c.data.CaddyImage = image
+	c.logger.Info("CaddyImage updated to: %s", image)
 }
 
 // GetMainDBPath returns the main database path

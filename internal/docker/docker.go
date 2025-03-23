@@ -2,13 +2,13 @@ package docker
 
 import (
 	"bytes"
-	_ "embed" // Required for embedding Caddyfile template
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template" // Required for template processing
+	"text/template"
 	"time"
 
 	"infinity-metrics-installer/internal/config"
@@ -25,8 +25,6 @@ const (
 	HealthCheckTries = 5
 )
 
-// Embed the Caddyfile template
-//
 //go:embed templates/Caddyfile.tmpl
 var caddyfileTemplate string
 
@@ -55,13 +53,11 @@ func (d *Docker) RunCommand(args ...string) (string, error) {
 }
 
 func (d *Docker) EnsureInstalled() error {
-	// Check if Docker is already installed
 	if version, err := d.RunCommand("version"); err == nil {
 		d.logger.Success("Docker is installed (version: %s)", strings.TrimSpace(strings.Split(version, "\n")[0]))
-		return nil // Docker is already installed, no action needed
+		return nil
 	}
 
-	// Docker not found, proceed with installation
 	d.logger.Info("Docker not found, installing...")
 	output, err := exec.Command("bash", "-c", "curl -fsSL https://get.docker.com | sh").CombinedOutput()
 	if err != nil {
@@ -70,7 +66,6 @@ func (d *Docker) EnsureInstalled() error {
 	}
 	d.logger.Success("Docker installed successfully")
 
-	// Start and enable Docker service
 	for _, cmd := range [][]string{
 		{"systemctl", "start", "docker"},
 		{"systemctl", "enable", "docker"},
@@ -80,7 +75,6 @@ func (d *Docker) EnsureInstalled() error {
 		}
 	}
 
-	// Verify installation
 	version, err := d.RunCommand("version")
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
@@ -93,13 +87,11 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	data := conf.GetData()
 	dataDir := data.InstallDir
 
-	// Check for active installation
 	if d.IsRunning(CaddyName) && d.IsRunning(AppNamePrimary) {
 		d.logger.Info("Active installation detected with running containers (%s, %s), skipping deployment", CaddyName, AppNamePrimary)
 		return nil
 	}
 
-	// Create required directories
 	for _, dir := range []string{
 		filepath.Join(dataDir, "storage"),
 		filepath.Join(dataDir, "logs"),
@@ -112,7 +104,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Ensure Docker network exists
 	if _, err := d.RunCommand("network", "inspect", NetworkName); err != nil {
 		d.logger.Info("Creating Docker network %s", NetworkName)
 		if _, err := d.RunCommand("network", "create", NetworkName); err != nil {
@@ -121,7 +112,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		d.logger.Success("Network created")
 	}
 
-	// Generate and write Caddyfile
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
 	caddyContent, err := d.generateCaddyfile(data, AppNamePrimary, "")
 	if err != nil {
@@ -131,7 +121,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
 
-	// Pull Docker images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
@@ -146,7 +135,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Deploy Caddy container if not already running
 	if !d.IsRunning(CaddyName) {
 		d.StopAndRemove(CaddyName)
 		d.logger.Info("Starting Caddy container...")
@@ -175,13 +163,13 @@ func (d *Docker) Deploy(conf *config.Config) error {
 		}
 	}
 
-	// Ensure the /data directory is writable for Caddy to handle ACME challenges
 	d.logger.Info("Ensuring /data directory is writable in %s container...", CaddyName)
 	_, err = d.RunCommand("exec", CaddyName, "chmod", "-R", "755", "/data")
 	if err != nil {
 		return fmt.Errorf("failed to set permissions on /data directory in %s container: %w", CaddyName, err)
 	}
 	d.logger.Success("/data directory permissions ensured")
+	d.logCaddyVersion() // Log Caddy version after deployment
 
 	return d.DeployApp(data, AppNamePrimary)
 }
@@ -197,7 +185,9 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
+	// Pull new images and remove old ones to avoid caching
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
+		d.RunCommand("rmi", image) // Remove cached image (ignore errors)
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
 			if _, err := d.RunCommand("pull", image); err == nil {
@@ -211,6 +201,15 @@ func (d *Docker) Update(conf *config.Config) error {
 		}
 	}
 
+	// Restart Caddy with the new image
+	d.logger.Info("Restarting Caddy container with new image...")
+	d.StopAndRemove(CaddyName)
+	if err := d.Deploy(conf); err != nil {
+		return fmt.Errorf("redeploy Caddy: %w", err)
+	}
+	d.logCaddyVersion() // Confirm Caddy version
+
+	// Update app container
 	currentName := AppNamePrimary
 	newName := AppNameSecondary
 	if d.IsRunning(newName) {
@@ -260,12 +259,10 @@ func (d *Docker) Update(conf *config.Config) error {
 	}
 
 	d.logger.Info("Reloading Caddy with both upstreams...")
-
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with both upstreams: %w", err)
 	}
-
 	d.logger.Success("Caddy updated with both upstreams")
 
 	time.Sleep(2 * time.Second)
@@ -281,16 +278,15 @@ func (d *Docker) Update(conf *config.Config) error {
 	}
 
 	d.logger.Info("Reloading Caddy with new upstream...")
-
 	if err := d.updateCaddyConfig(CaddyName, caddyContent); err != nil {
 		d.StopAndRemove(newName)
 		return fmt.Errorf("reload caddy with new upstream: %w", err)
 	}
-
 	d.logger.Success("Caddy updated to new upstream")
 
 	d.StopAndRemove(currentName)
 	d.RunCommand("image", "prune", "-f")
+	d.logContainerImage(newName) // Confirm app container image
 	return nil
 }
 
@@ -324,7 +320,6 @@ func (d *Docker) StopAndRemove(name string) {
 }
 
 func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
-	// Ensure the /data directory is writable for Caddy to handle ACME challenges
 	d.logger.Info("Ensuring /data directory is writable in %s container...", caddyName)
 	_, err := d.RunCommand("exec", caddyName, "chmod", "-R", "755", "/data")
 	if err != nil {
@@ -332,7 +327,6 @@ func (d *Docker) updateCaddyConfig(caddyName, caddyConfig string) error {
 	}
 	d.logger.Success("/data directory permissions ensured")
 
-	// Reload Caddy with the new configuration
 	var buf bytes.Buffer
 	buf.WriteString(caddyConfig)
 	cmd := exec.Command("docker", "exec", caddyName, "caddy", "reload", "--config", "/dev/stdin")
@@ -350,9 +344,7 @@ func (d *Docker) IsRunning(name string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-// ExecuteCommand runs a command inside the app container
 func (d *Docker) ExecuteCommand(command ...string) error {
-	// Determine which app container is running
 	containerName := AppNamePrimary
 	if !d.IsRunning(containerName) {
 		containerName = AppNameSecondary
@@ -372,8 +364,7 @@ func (d *Docker) ExecuteCommand(command ...string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to execute in container %s: %w - %s",
-			containerName, err, stderr.String())
+		return fmt.Errorf("failed to execute in container %s: %w - %s", containerName, err, stderr.String())
 	}
 
 	if stdout.Len() > 0 {
@@ -384,26 +375,22 @@ func (d *Docker) ExecuteCommand(command ...string) error {
 }
 
 func (d *Docker) ensureNetworkConnected(container, network string) error {
-	// Inspect the network to see if the container is already connected
 	output, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}")
 	if err != nil {
 		return fmt.Errorf("failed to inspect network %s: %w", network, err)
 	}
 
-	// Check if the container is already connected to the network
 	if strings.Contains(output, container) {
 		d.logger.Info("Container %s is already connected to network %s", container, network)
 		return nil
 	}
 
-	// Container is not connected, connect it to the network
 	d.logger.Info("Connecting container %s to network %s...", container, network)
 	_, err = d.RunCommand("network", "connect", network, container)
 	if err != nil {
 		return fmt.Errorf("failed to connect container %s to network %s: %w", container, network, err)
 	}
 	d.logger.Success("Container %s connected to network %s", container, network)
-
 	return nil
 }
 
@@ -413,7 +400,6 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		upstreams += " " + secondaryApp + ":8080"
 	}
 
-	// Determine TLS configuration based on environment
 	env := os.Getenv("ENV")
 	var tlsConfig string
 	if env == "test" {
@@ -421,10 +407,9 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		tlsConfig = "internal"
 	} else {
 		d.logger.Info("Using Let's Encrypt for production environment")
-		tlsConfig = data.AdminEmail // Use the admin email directly for tls directive
+		tlsConfig = data.AdminEmail
 	}
 
-	// Create template data structure
 	tplData := struct {
 		AdminEmail string
 		Domain     string
@@ -437,7 +422,6 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 		Upstreams:  upstreams,
 	}
 
-	// Parse and execute template
 	tmpl, err := template.New("caddyfile").Parse(caddyfileTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
@@ -449,4 +433,22 @@ func (d *Docker) generateCaddyfile(data config.ConfigData, primaryApp, secondary
 	}
 
 	return buf.String(), nil
+}
+
+func (d *Docker) logCaddyVersion() {
+	output, err := d.RunCommand("exec", CaddyName, "caddy", "version")
+	if err == nil {
+		d.logger.Info("Caddy version: %s", strings.TrimSpace(output))
+	} else {
+		d.logger.Warn("Failed to get Caddy version: %v", err)
+	}
+}
+
+func (d *Docker) logContainerImage(containerName string) {
+	output, err := d.RunCommand("inspect", containerName, "--format", "{{.Config.Image}}")
+	if err == nil {
+		d.logger.Info("%s is running image: %s", containerName, strings.TrimSpace(output))
+	} else {
+		d.logger.Warn("Failed to inspect %s image: %v", containerName, err)
+	}
 }

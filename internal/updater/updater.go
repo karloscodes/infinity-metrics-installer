@@ -32,18 +32,17 @@ type Updater struct {
 }
 
 func NewUpdater(logger *logging.Logger) *Updater {
-	// Create a new file logger for the Updater with a specific log file name
 	fileLogger := logging.NewFileLogger(logging.Config{
-		Level:   logger.Level.String(), // Match the log level from the main logger
-		Verbose: logger.GetVerbose(),   // Use getter method
-		Quiet:   logger.GetQuiet(),     // Use getter method
-		LogDir:  "",                    // Use default log directory (/opt/infinity-metrics/logs)
-		LogFile: "updater.log",         // Specify the log file name for the Updater
+		Level:   logger.Level.String(),
+		Verbose: logger.GetVerbose(),
+		Quiet:   logger.GetQuiet(),
+		LogDir:  "",
+		LogFile: "updater.log",
 	})
 
 	db := database.NewDatabase(fileLogger)
 	return &Updater{
-		logger:   fileLogger, // Use the file logger for the Updater
+		logger:   fileLogger,
 		config:   config.NewConfig(fileLogger),
 		docker:   docker.NewDocker(fileLogger, db),
 		database: db,
@@ -64,15 +63,18 @@ func (u *Updater) Run(currentVersion string) error {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	// Fetch the latest version from GitHub
-	latestVersion, binaryURL, err := u.getLatestVersionAndBinaryURL()
+	// Fetch the latest version and Caddy image from GitHub
+	latestVersion, binaryURL, caddyImage, err := u.getLatestVersionAndBinaryURL()
 	if err != nil {
 		u.logger.Warn("Failed to fetch latest version from GitHub: %v", err)
-		// Fall back to using the version from the config
 		latestVersion = extractVersionFromURL(u.config.GetData().InstallerURL)
 		if latestVersion == "" {
 			u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
 		}
+	} else {
+		// Update CaddyImage in config if fetched successfully
+		u.config.SetCaddyImage(caddyImage)
+		u.logger.Info("Updated Caddy image to: %s", caddyImage)
 	}
 
 	// Compare versions and update binary if necessary
@@ -84,7 +86,6 @@ func (u *Updater) Run(currentVersion string) error {
 				return fmt.Errorf("unsupported architecture: %s", arch)
 			}
 
-			// Use the binary URL from GitHub if available, otherwise fall back to InstallerURL
 			downloadURL := binaryURL
 			if downloadURL == "" {
 				downloadURL = u.config.GetData().InstallerURL
@@ -98,17 +99,11 @@ func (u *Updater) Run(currentVersion string) error {
 			} else {
 				u.logger.Success("Binary updated to version %s", latestVersion)
 				u.logger.Info("Restarting with new binary...")
-
-				// Get the original arguments that were passed to the current process
 				args := os.Args
-
-				// Replace the current process with the new binary
 				err = syscall.Exec(BinaryInstallPath, args, os.Environ())
 				if err != nil {
 					return fmt.Errorf("failed to exec new binary: %w", err)
 				}
-
-				// If syscall.Exec succeeds, we won't reach this point
 				return nil
 			}
 		} else {
@@ -127,22 +122,21 @@ func (u *Updater) Run(currentVersion string) error {
 	return nil
 }
 
-func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
+func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error) {
 	u.logger.Info("Fetching latest release from GitHub: %s", GitHubAPIURL)
 
-	// Add a timeout to the HTTP client
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 	}
 
 	resp, err := client.Get(GitHubAPIURL)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to fetch latest release: %w", err)
+		return "", "", "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("failed to fetch latest release, status: %s", resp.Status)
+		return "", "", "", fmt.Errorf("failed to fetch latest release, status: %s", resp.Status)
 	}
 
 	var release struct {
@@ -153,16 +147,14 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", "", fmt.Errorf("failed to parse release JSON: %w", err)
+		return "", "", "", fmt.Errorf("failed to parse release JSON: %w", err)
 	}
 
-	// Extract the version from the tag name (e.g., "v1.0.3" -> "1.0.3")
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	if latestVersion == "" {
-		return "", "", fmt.Errorf("invalid version in release tag: %s", release.TagName)
+		return "", "", "", fmt.Errorf("invalid version in release tag: %s", release.TagName)
 	}
 
-	// Find the binary for the current architecture
 	arch := runtime.GOARCH
 	expectedAsset := fmt.Sprintf("infinity-metrics-v%s-%s", latestVersion, arch)
 	var binaryURL string
@@ -174,10 +166,13 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
 	}
 
 	if binaryURL == "" {
-		return latestVersion, "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
+		return latestVersion, "", "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
 	}
 
-	return latestVersion, binaryURL, nil
+	// Assume Caddy version matches the release version (e.g., "2.9" -> "caddy:2.9")
+	caddyImage := fmt.Sprintf("caddy:%s", latestVersion)
+
+	return latestVersion, binaryURL, caddyImage, nil
 }
 
 func (u *Updater) update() error {
@@ -197,7 +192,6 @@ func (u *Updater) update() error {
 
 	u.logger.Info("Step 3/%d: Applying updates", totalSteps)
 
-	// Backup the database right before applying the new Docker image
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {
@@ -222,7 +216,6 @@ func (u *Updater) update() error {
 func (u *Updater) updateBinary(url, binaryPath string) error {
 	u.logger.InfoWithTime("Downloading new installer binary from %s", url)
 
-	// Add a timeout to the HTTP client
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 	}
@@ -237,7 +230,6 @@ func (u *Updater) updateBinary(url, binaryPath string) error {
 		return fmt.Errorf("download failed, status: %s", resp.Status)
 	}
 
-	// Use a temporary file in /tmp to avoid permission issues
 	newBinary := filepath.Join("/tmp", "infinity-metrics.new")
 	out, err := os.Create(newBinary)
 	if err != nil {
@@ -253,7 +245,6 @@ func (u *Updater) updateBinary(url, binaryPath string) error {
 		return fmt.Errorf("chmod new binary: %w", err)
 	}
 
-	// Move the new binary to the final location
 	if err := os.Rename(newBinary, binaryPath); err != nil {
 		return fmt.Errorf("replace binary: %w", err)
 	}
@@ -263,11 +254,9 @@ func (u *Updater) updateBinary(url, binaryPath string) error {
 }
 
 func compareVersions(v1, v2 string) int {
-	// Split version strings into parts
 	v1Parts := strings.Split(v1, ".")
 	v2Parts := strings.Split(v2, ".")
 
-	// Ensure both versions have the same number of parts
 	maxParts := len(v1Parts)
 	if len(v2Parts) > maxParts {
 		maxParts = len(v2Parts)
@@ -279,7 +268,6 @@ func compareVersions(v1, v2 string) int {
 		v2Parts = append(v2Parts, "0")
 	}
 
-	// Compare each part
 	for i := 0; i < maxParts; i++ {
 		v1Num := 0
 		v2Num := 0
