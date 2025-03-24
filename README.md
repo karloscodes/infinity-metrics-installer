@@ -15,6 +15,6 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## Support
 
-- Documentation: [docs.infinitymetrics.com](https://getinfinitymetrics.com)
+- Documentation: [getinfinitymetrics.com](https://getinfinitymetrics.com)
 - Issues: [GitHub Issues](https://github.com/karloscodes/infinity-metrics-installer/issues)
 
