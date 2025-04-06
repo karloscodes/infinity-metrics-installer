@@ -36,8 +36,8 @@ func NewUpdater(logger *logging.Logger) *Updater {
 		Level:   logger.Level.String(),
 		Verbose: logger.GetVerbose(),
 		Quiet:   logger.GetQuiet(),
-		LogDir:  "",
-		LogFile: "updater.log",
+		LogDir:  "/opt/infinity-metrics/logs",
+		LogFile: "infinity-metrics-updater.log",
 	})
 
 	db := database.NewDatabase(fileLogger)

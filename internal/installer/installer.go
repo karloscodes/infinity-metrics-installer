@@ -181,13 +181,31 @@ func (i *Installer) setupCronJob() error {
 	}
 
 	cronFile := DefaultCronFile
-	cronContent := fmt.Sprintf("%s root %s update\n", DefaultCronSchedule, i.binaryPath)
+
+	// Create a more robust cron job with better environment setup
+	cronContent := fmt.Sprintf("# Infinity Metrics automated updates\n")
+	cronContent += fmt.Sprintf("SHELL=/bin/bash\n")
+	cronContent += fmt.Sprintf("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
+	cronContent += fmt.Sprintf("INSTALL_DIR=%s\n", DefaultInstallDir)
+	cronContent += fmt.Sprintf("%s root cd %s && %s update > %s/logs/updater.log 2>&1\n",
+		DefaultCronSchedule,
+		DefaultInstallDir,
+		i.binaryPath,
+		DefaultInstallDir)
 
 	i.logger.Info("Setting up cron job...")
+
+	// Ensure the logs directory exists
+	logsDir := filepath.Join(DefaultInstallDir, "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		i.logger.Warn("Failed to create logs directory: %v", err)
+	}
+
 	if err := os.WriteFile(cronFile, []byte(cronContent), 0o644); err != nil {
 		i.logger.Error("Cron setup failed: %v", err)
 		return fmt.Errorf("failed to write cron file %s: %w", cronFile, err)
 	}
+
 	i.logger.Success("Cron job setup complete")
 	i.logger.InfoWithTime("Automatic updates scheduled for 3:00 AM daily")
 	return nil
