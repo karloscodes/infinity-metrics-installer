@@ -38,12 +38,11 @@
         fail_duration 30s
         max_fails 2
         
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {http.request.remote.host}
-        header_up Host {host}
-        header_up User-Agent {http.request.user_agent}
-        header_up Referer {http.request.uri}
-        header_up Accept-Language {http.request.header.Accept-Language}
+       header_up X-Forwarded-Proto {scheme}
+       header_up Host {host}
+       header_up X-Forwarded-Host {host}
+       header_up X-Forwarded-For {remote_host}
+       header_up X-Real-IP {remote_host}
 
         flush_interval -1
     }
