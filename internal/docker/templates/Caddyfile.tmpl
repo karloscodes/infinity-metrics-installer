@@ -48,16 +48,6 @@
         flush_interval -1
     }
     
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-        Referrer-Policy "same-origin"
-        Permissions-Policy "microphone=(), camera=()"
-        -Server
-    }
-    
     log {
         output file /data/logs/{{.Domain}}-access.log {
             roll_size 50MiB
