@@ -42,7 +42,7 @@
         header_up X-Forwarded-For {http.request.remote.host}
         header_up Host {host}
         header_up User-Agent {http.request.user_agent}
-        header_up Referer {http.request.referer}
+        header_up Referer {http.request.uri}
         header_up Accept-Language {http.request.header.Accept-Language}
 
         flush_interval -1
