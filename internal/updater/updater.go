@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"infinity-metrics-installer/internal/config"
+	"infinity-metrics-installer/internal/cron"
 	"infinity-metrics-installer/internal/database"
 	"infinity-metrics-installer/internal/docker"
 	"infinity-metrics-installer/internal/logging"
@@ -176,7 +177,7 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error)
 }
 
 func (u *Updater) update() error {
-	totalSteps := 3
+	totalSteps := 4
 
 	u.logger.Info("Step 1/%d: Loading configuration", totalSteps)
 	data := u.config.GetData()
@@ -203,6 +204,14 @@ func (u *Updater) update() error {
 
 	if err := u.docker.Update(u.config); err != nil {
 		return fmt.Errorf("failed to update Docker containers: %w", err)
+	}
+
+	u.logger.Info("Step 4/%d: Updating cron job", totalSteps)
+	cronManager := cron.NewManager(u.logger)
+	if err := cronManager.SetupCronJob(); err != nil {
+		u.logger.Warn("Failed to update cron job: %v", err)
+	} else {
+		u.logger.Success("Cron job updated successfully")
 	}
 
 	if err := u.config.SaveToFile(envFile); err != nil {
