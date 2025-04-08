@@ -225,38 +225,123 @@ func (u *Updater) update() error {
 func (u *Updater) updateBinary(url, binaryPath string) error {
 	u.logger.InfoWithTime("Downloading new installer binary from %s", url)
 
+	// Add diagnostic logging
+	u.logger.Info("Checking current user and permissions")
+	u.logger.Info("Current user: uid=%d, gid=%d", os.Getuid(), os.Getgid())
+	u.logger.Info("Destination binary path: %s", binaryPath)
+
+	// Check if /tmp exists and its permissions
+	if tmpInfo, err := os.Stat("/tmp"); err != nil {
+		u.logger.Info("/tmp directory error: %v", err)
+	} else {
+		u.logger.Info("/tmp directory permissions: %v", tmpInfo.Mode())
+	}
+
+	// Try to write a test file to /tmp
+	testFile := "/tmp/infinity-metrics-test"
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		u.logger.Info("Test write to /tmp failed: %v", err)
+	} else {
+		u.logger.Info("Test write to /tmp succeeded, removing test file")
+		os.Remove(testFile)
+	}
+
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 	}
 
+	u.logger.Info("Starting HTTP request to download binary")
 	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	u.logger.Info("HTTP response status: %s", resp.Status)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed, status: %s", resp.Status)
 	}
 
 	newBinary := filepath.Join("/tmp", "infinity-metrics.new")
+	u.logger.Info("Attempting to create file at: %s", newBinary)
+
+	// Check if the file already exists
+	if _, err := os.Stat(newBinary); err == nil {
+		u.logger.Info("File already exists, attempting to remove it")
+		if err := os.Remove(newBinary); err != nil {
+			u.logger.Info("Failed to remove existing file: %v", err)
+		} else {
+			u.logger.Info("Successfully removed existing file")
+		}
+	} else {
+		u.logger.Info("File does not exist yet: %v", err)
+	}
+
 	out, err := os.Create(newBinary)
 	if err != nil {
+		// Log detailed error information
+		u.logger.Info("Failed to create file: %v", err)
+		u.logger.Info("Error type: %T", err)
+
+		// Check parent directory permissions
+		tmpDir := filepath.Dir(newBinary)
+		u.logger.Info("Parent directory: %s", tmpDir)
+		if dirInfo, err := os.Stat(tmpDir); err != nil {
+			u.logger.Info("Failed to stat parent directory: %v", err)
+		} else {
+			u.logger.Info("Parent directory mode: %v", dirInfo.Mode())
+		}
+
 		return fmt.Errorf("create new binary: %w", err)
 	}
+
+	u.logger.Info("Successfully created file at %s", newBinary)
 	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	u.logger.Info("Copying response body to file")
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		u.logger.Info("Failed to write data: %v", err)
 		return fmt.Errorf("write new binary: %w", err)
 	}
+	u.logger.Info("Successfully wrote %d bytes to file", written)
 
+	// Close the file before chmod
+	out.Close()
+	u.logger.Info("Closed file after writing")
+
+	u.logger.Info("Setting file permissions to 0755")
 	if err := os.Chmod(newBinary, 0o755); err != nil {
+		u.logger.Info("Failed to set file permissions: %v", err)
 		return fmt.Errorf("chmod new binary: %w", err)
 	}
+	u.logger.Info("Successfully set file permissions")
 
+	u.logger.Info("Attempting to replace existing binary at %s", binaryPath)
 	if err := os.Rename(newBinary, binaryPath); err != nil {
+		u.logger.Info("Failed to rename file: %v", err)
+		u.logger.Info("Checking if destination exists")
+
+		if _, err := os.Stat(binaryPath); err == nil {
+			u.logger.Info("Destination file exists, checking permissions")
+			if destInfo, err := os.Stat(binaryPath); err == nil {
+				u.logger.Info("Destination file permissions: %v", destInfo.Mode())
+			}
+		} else {
+			u.logger.Info("Destination file does not exist: %v", err)
+		}
+
+		// Check if source and destination are on different filesystems
+		if linkErr, ok := err.(*os.LinkError); ok {
+			u.logger.Info("Link error: %v", linkErr)
+			if linkErr.Err.Error() == "invalid cross-device link" {
+				u.logger.Info("Cross-device link error detected. Source and destination are on different filesystems.")
+			}
+		}
+
 		return fmt.Errorf("replace binary: %w", err)
 	}
+	u.logger.Info("Successfully replaced binary")
 
 	u.logger.Success("Binary updated successfully")
 	return nil
