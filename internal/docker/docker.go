@@ -287,7 +287,6 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 		"-v", filepath.Join(data.InstallDir, "logs")+":/app/logs",
 		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
-		"-e", "INFINITY_METRICS_GEO_DB_PATH=/app/storage/GeoLite2-City.mmdb",
 		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
 		"-e", "INFINITY_METRICS_DOMAIN="+data.Domain,
 		"-e", "SERVER_INSTANCE_ID="+name,
