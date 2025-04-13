@@ -203,6 +203,11 @@ func (d *Docker) Update(conf *config.Config) error {
 			d.logger.Success("%s deployed", newName)
 			break
 		} else if i == MaxRetries-1 {
+			d.logger.Error("Failed to deploy %s after %d retries", newName, MaxRetries)
+			// If the container was created but failed to start properly, try to get logs
+			if d.containerExists(newName) {
+				d.logContainerLogs(newName)
+			}
 			d.StopAndRemove(newName)
 			return fmt.Errorf("deploy %s failed after %d retries: %w", newName, MaxRetries, err)
 		}
@@ -344,6 +349,7 @@ func (d *Docker) ExecuteCommand(command ...string) error {
 func (d *Docker) ensureNetworkConnected(container, network string) error {
 	output, err := d.RunCommand("network", "inspect", network, "--format", "{{range .Containers}}{{.Name}}{{end}}")
 	if err != nil {
+		d.logger.Error("Failed to inspect network %s: %v", network, err)
 		return fmt.Errorf("failed to inspect network %s: %w", network, err)
 	}
 
@@ -355,6 +361,18 @@ func (d *Docker) ensureNetworkConnected(container, network string) error {
 	d.logger.Info("Connecting container %s to network %s...", container, network)
 	_, err = d.RunCommand("network", "connect", network, container)
 	if err != nil {
+		d.logger.Error("Failed to connect container %s to network %s. Error: %v", container, network, err)
+
+		// Check container status to provide more context
+		if d.containerExists(container) {
+			status, statusErr := d.RunCommand("inspect", "--format", "{{.State.Status}}", container)
+			if statusErr == nil {
+				d.logger.Info("Container %s current status: %s", container, strings.TrimSpace(status))
+			}
+		} else {
+			d.logger.Error("Container %s no longer exists, which may be why network connection failed", container)
+		}
+
 		return fmt.Errorf("failed to connect container %s to network %s: %w", container, network, err)
 	}
 	d.logger.Success("Container %s connected to network %s", container, network)
@@ -405,10 +423,42 @@ func (d *Docker) waitForAppHealth(name string) error {
 		}
 		time.Sleep(2 * time.Second)
 		if i == HealthCheckTries-1 {
+			d.logger.Error("Container %s failed to become healthy after %d attempts", name, HealthCheckTries)
+			d.logContainerLogs(name)
 			return fmt.Errorf("app %s not healthy after %d attempts", name, HealthCheckTries)
 		}
 	}
 	return nil
+}
+
+func (d *Docker) logContainerLogs(containerName string) {
+	d.logger.Warn("Fetching logs from unhealthy container %s to diagnose issue:", containerName)
+
+	logs, err := d.RunCommand("logs", "--tail", "50", containerName)
+	if err != nil {
+		d.logger.Error("Failed to fetch logs for container %s: %v", containerName, err)
+		return
+	}
+
+	if logs == "" {
+		d.logger.Warn("No logs available for container %s", containerName)
+	} else {
+		for _, line := range strings.Split(logs, "\n") {
+			if line != "" {
+				d.logger.Debug("[Container %s] %s", containerName, line)
+			}
+		}
+	}
+
+	status, err := d.RunCommand("inspect", "--format", "{{.State.Status}}", containerName)
+	if err == nil {
+		d.logger.Info("Container %s current status: %s", containerName, strings.TrimSpace(status))
+	}
+
+	errMsg, err := d.RunCommand("inspect", "--format", "{{.State.Error}}", containerName)
+	if err == nil && strings.TrimSpace(errMsg) != "" && strings.TrimSpace(errMsg) != "<no value>" {
+		d.logger.Error("Container %s error message: %s", containerName, strings.TrimSpace(errMsg))
+	}
 }
 
 func (d *Docker) logCaddyVersion() {
@@ -436,4 +486,10 @@ func (d *Docker) logImageDigest(image string) {
 	} else {
 		d.logger.Warn("Failed to get digest for %s: %v", image, err)
 	}
+}
+
+func (d *Docker) containerExists(name string) bool {
+	// Check if the container exists, even if it's not running
+	out, err := d.RunCommand("ps", "-a", "-q", "-f", "name="+name)
+	return err == nil && strings.TrimSpace(out) != ""
 }
