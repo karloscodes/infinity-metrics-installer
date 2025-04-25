@@ -5,8 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
+	"infinity-metrics-installer/internal/admin"
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
@@ -56,6 +61,12 @@ func main() {
 	case "restore":
 		logger.Debug("Starting 'restore' command")
 		runRestore(inst, logger, startTime)
+	case "change-admin-password":
+		logger.Debug("Starting 'change-admin-password' command")
+		runChangeAdminPassword(logger, startTime)
+	case "create-admin-user":
+		logger.Debug("Starting 'create-admin-user' command")
+		runCreateAdminUser(logger, startTime)
 	case "help":
 		logger.Debug("Starting 'help' command")
 		printUsage(logger)
@@ -125,6 +136,120 @@ func runRestore(inst *installer.Installer, logger *logging.Logger, startTime tim
 	logger.Success("Restore completed in %s", elapsedTime)
 }
 
+func runChangeAdminPassword(logger *logging.Logger, startTime time.Time) {
+	adminMgr := admin.NewManager(logger)
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter admin email: ")
+	emailInput, err := reader.ReadString('\n')
+	if err != nil {
+		logger.Error("Failed to read email: %v", err)
+		os.Exit(1)
+	}
+	email := strings.TrimSpace(emailInput)
+	if email == "" {
+		logger.Error("Email cannot be empty")
+		os.Exit(1)
+	}
+
+	var password string
+	for {
+		fmt.Print("Enter new admin password (minimum 8 characters): ")
+		passBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read password: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		password = strings.TrimSpace(string(passBytes))
+		if len(password) < 8 {
+			fmt.Println("Error: Password must be at least 8 characters long.")
+			continue
+		}
+
+		fmt.Print("Confirm new admin password: ")
+		confirmBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read confirmation password: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		confirm := strings.TrimSpace(string(confirmBytes))
+		if password != confirm {
+			fmt.Println("Error: Passwords do not match. Please try again.")
+			continue
+		}
+		break
+	}
+
+	if err := adminMgr.ChangeAdminPassword(email, password); err != nil {
+		logger.Error("Failed to change admin password: %v", err)
+		os.Exit(1)
+	}
+
+	elapsed := time.Since(startTime).Round(time.Second)
+	logger.Success("Password changed in %s", elapsed)
+}
+
+func runCreateAdminUser(logger *logging.Logger, startTime time.Time) {
+	adminMgr := admin.NewManager(logger)
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter admin email: ")
+	emailInput, err := reader.ReadString('\n')
+	if err != nil {
+		logger.Error("Failed to read email: %v", err)
+		os.Exit(1)
+	}
+	email := strings.TrimSpace(emailInput)
+	if email == "" {
+		logger.Error("Email cannot be empty")
+		os.Exit(1)
+	}
+
+	var password string
+	for {
+		fmt.Print("Enter admin password (minimum 8 characters): ")
+		passBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read password: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		password = strings.TrimSpace(string(passBytes))
+		if len(password) < 8 {
+			fmt.Println("Error: Password must be at least 8 characters long.")
+			continue
+		}
+
+		fmt.Print("Confirm admin password: ")
+		confirmBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read confirmation password: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+
+		confirm := strings.TrimSpace(string(confirmBytes))
+		if password != confirm {
+			fmt.Println("Error: Passwords do not match. Please try again.")
+			continue
+		}
+		break
+	}
+
+	if err := adminMgr.CreateAdminUser(email, password); err != nil {
+		logger.Error("Failed to create admin user: %v", err)
+		os.Exit(1)
+	}
+
+	elapsed := time.Since(startTime).Round(time.Second)
+	logger.Success("Admin user created in %s", elapsed)
+}
+
 func printUsage(logger *logging.Logger) {
 	fmt.Println("------------------------------------------------------------------")
 	fmt.Printf("  Infinity Metrics Installer v%s - https://getinfinitymetrics.com\n", currentInstallerVersion)
@@ -135,6 +260,8 @@ func printUsage(logger *logging.Logger) {
 	fmt.Println("  install  Install Infinity Metrics")
 	fmt.Println("  update   Update Infinity Metrics")
 	fmt.Println("  restore  Restore the last database backup")
+	fmt.Println("  create-admin-user     Create an admin user inside the running container")
+	fmt.Println("  change-admin-password  Change the admin user's password")
 	fmt.Println("  help     Show this help message")
 	fmt.Println("\nFlags:")
 	flag.PrintDefaults()

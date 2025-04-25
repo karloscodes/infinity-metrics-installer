@@ -2,6 +2,8 @@ package config
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -31,6 +33,7 @@ type ConfigData struct {
 	CaddyImage    string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
 	InstallDir    string // Default: e.g., "/opt/infinity-metrics"
 	BackupPath    string // Default: SQLite backup location
+	PrivateKey    string // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
 	Version       string // GitHub Release: Version of the infinity-metrics binary (optional)
 	InstallerURL  string // GitHub Release: URL to download new infinity-metrics binary
 }
@@ -54,6 +57,7 @@ func NewConfig(logger *logging.Logger) *Config {
 			CaddyImage:    "caddy:2.7-alpine",
 			InstallDir:    "/opt/infinity-metrics",
 			BackupPath:    "/opt/infinity-metrics/storage/backups",
+			PrivateKey:    "",
 			Version:       "latest",
 			InstallerURL:  fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
 		},
@@ -224,10 +228,28 @@ func (c *Config) LoadFromFile(filename string) error {
 			c.data.Version = value
 		case "INSTALLER_URL":
 			c.data.InstallerURL = value
+		case "INFINITY_METRICS_PRIVATE_KEY":
+			c.data.PrivateKey = value
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// If PrivateKey is missing, generate one and append to file
+	if c.data.PrivateKey == "" {
+		pk, err := generatePrivateKey()
+		if err != nil {
+			return err
+		}
+		c.data.PrivateKey = pk
+		// Append to file
+		f, ferr := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
+		if ferr == nil {
+			fmt.Fprintf(f, "INFINITY_METRICS_PRIVATE_KEY=%s\n", pk)
+			f.Close()
+			c.logger.Info("Added missing INFINITY_METRICS_PRIVATE_KEY to %s", filename)
+		}
 	}
 	c.logger.Success("Configuration loaded from %s", filename)
 	return nil
@@ -236,6 +258,17 @@ func (c *Config) LoadFromFile(filename string) error {
 // SaveToFile saves local config to .env
 func (c *Config) SaveToFile(filename string) error {
 	c.logger.Info("Saving to %s", filename)
+
+	// Ensure private key is set
+	if c.data.PrivateKey == "" {
+		pk, err := generatePrivateKey()
+		if err != nil {
+			return err
+		}
+		c.data.PrivateKey = pk
+		c.logger.Info("Generated new INFINITY_METRICS_PRIVATE_KEY")
+	}
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
@@ -251,6 +284,7 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "BACKUP_PATH=%s\n", c.data.BackupPath)
 	fmt.Fprintf(file, "VERSION=%s\n", c.data.Version)
 	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
+	fmt.Fprintf(file, "INFINITY_METRICS_PRIVATE_KEY=%s\n", c.data.PrivateKey)
 
 	c.logger.Success("Configuration saved to %s", filename)
 	return nil
@@ -363,6 +397,16 @@ func (c *Config) SetCaddyImage(image string) {
 	c.logger.Info("CaddyImage updated to: %s", image)
 }
 
+// SetInstallDir sets the InstallDir field in ConfigData
+func (c *Config) SetInstallDir(dir string) {
+	c.data.InstallDir = dir
+}
+
+// SetInstallerURL sets the InstallerURL field in ConfigData
+func (c *Config) SetInstallerURL(url string) {
+	c.data.InstallerURL = url
+}
+
 // GetMainDBPath returns the main database path
 func (c *Config) GetMainDBPath() string {
 	return filepath.Join(c.data.InstallDir, "storage", "infinity-metrics-production.db")
@@ -394,5 +438,18 @@ func (c *Config) Validate() error {
 	if c.data.BackupPath == "" {
 		return fmt.Errorf("backup path is required")
 	}
+	if c.data.PrivateKey == "" {
+		return fmt.Errorf("private key is required")
+	}
 	return nil
+}
+
+// generatePrivateKey generates a secure random private key
+func generatePrivateKey() (string, error) {
+	key := make([]byte, 16)
+	_, err := rand.Read(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate private key: %w", err)
+	}
+	return hex.EncodeToString(key), nil
 }

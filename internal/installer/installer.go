@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"infinity-metrics-installer/internal/admin"
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/cron"
 	"infinity-metrics-installer/internal/database"
@@ -163,12 +164,8 @@ func (i *Installer) createDefaultUser() error {
 
 	data := i.config.GetData()
 
-	// Use the correct path to infinity-metrics-ctl in the container
-	err := i.docker.ExecuteCommand(
-		"/app/infinity-metrics-ctl", "setup-initial-user",
-		data.AdminEmail,
-		data.AdminPassword)
-	if err != nil {
+	adminMgr := admin.NewManager(i.logger)
+	if err := adminMgr.CreateAdminUser(data.AdminEmail, data.AdminPassword); err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
 
