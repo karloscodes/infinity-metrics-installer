@@ -42,32 +42,38 @@ clean:
 	rm -rf $(BINARY_DIR)
 	rm -rf coverage.out
 
-test-unit:
-	$(GOTEST) -v ./installer/... ./pkg/...
-
-# Run all tests (will use appropriate runner based on environment)
-test:
-	@if [ "$(IN_GITHUB_ACTIONS)" = "true" ]; then \
-		make test-ci; \
+# Install gotestsum (Go test runner with improved output)
+install-gotestsum:
+	@echo "Checking for gotestsum..."
+	@if command -v gotestsum >/dev/null 2>&1; then \
+		echo "gotestsum is already installed."; \
 	else \
-		make test-local; \
+		echo "gotestsum not found. Installing..."; \
+		GO111MODULE=on go install gotest.tools/gotestsum@latest; \
 	fi
 
-# CI-specific testing (no multipass)
-test-ci: build-linux
-	@echo "Running tests in CI environment"
+# Run all unit tests using gotestsum (in internal/*)
+test-unit: install-gotestsum
+	$(shell go env GOPATH)/bin/gotestsum --format=short-verbose -- ./internal/...
+
+# Run all integration tests using go test (in tests/integration), mimicking previous working logic
+test-integration: clean build-linux
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
 	else \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
 	fi
-	
-	@echo "Running all installer tests..."
+	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"
 	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 	DEBUG=1 \
-	$(GOTEST) -v ./tests
-	
-# Local testing with multipass
+	$(GOTEST) -v ./tests/integration
+
+# Run all tests (unit + integration)
+test: install-gotestsum
+	make test-unit
+	make test-integration
+
+# Run all tests (will use appropriate runner based on environment)
 test-local: clean build-linux install-multipass
 	@echo "Running tests in local environment"
 	@if [ "$(ARCH)" = "arm64" ]; then \
@@ -77,6 +83,19 @@ test-local: clean build-linux install-multipass
 	fi
 	
 	@echo "Running tests with KEEP_VM=$(KEEP_VM)"
+	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
+	DEBUG=1 \
+	$(GOTEST) -v ./tests
+	
+test-ci: build-linux
+	@echo "Running tests in CI environment"
+	@if [ "$(ARCH)" = "arm64" ]; then \
+		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
+	else \
+		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
+	fi
+	
+	@echo "Running all installer tests..."
 	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
 	DEBUG=1 \
 	$(GOTEST) -v ./tests
