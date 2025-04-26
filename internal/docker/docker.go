@@ -172,10 +172,8 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.logger.Success("Network created")
 	}
 
-	// Pull new images and remove old ones
+	// Pull new images
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
-		d.logger.Info("Removing old image %s to avoid caching...", image)
-		d.RunCommand("rmi", "-f", image)
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
 			if _, err := d.RunCommand("pull", image); err == nil {
@@ -257,6 +255,7 @@ func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
 	_, err := d.RunCommand("run", "-d",
 		"--name", CaddyName,
 		"--network", NetworkName,
+		"--pull", "always",
 		"-p", "80:80", "-p", "443:443", "-p", "443:443/udp",
 		"-v", caddyFile+":/etc/caddy/Caddyfile:ro",
 		"-v", filepath.Join(data.InstallDir, "caddy")+":/data",
@@ -288,6 +287,7 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	_, err := d.RunCommand("run", "-d",
 		"--name", name,
 		"--network", NetworkName,
+		"--pull", "always",
 		"-v", filepath.Join(data.InstallDir, "storage")+":/app/storage",
 		"-v", filepath.Join(data.InstallDir, "logs")+":/app/logs",
 		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
