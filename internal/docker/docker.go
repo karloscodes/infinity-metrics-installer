@@ -124,7 +124,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
-			if _, err := d.RunCommand("pull", image); err == nil {
+			if _, err := d.RunCommand("pull", "--pull-always", image); err == nil {
 				d.logger.Success("%s pulled successfully", image)
 				d.logImageDigest(image)
 				break
@@ -176,7 +176,7 @@ func (d *Docker) Update(conf *config.Config) error {
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
-			if _, err := d.RunCommand("pull", image); err == nil {
+			if _, err := d.RunCommand("pull", "--pull-always", image); err == nil {
 				d.logger.Success("%s pulled successfully", image)
 				d.logImageDigest(image)
 				break
@@ -246,6 +246,72 @@ func (d *Docker) Update(conf *config.Config) error {
 	d.StopAndRemove(currentName)
 	d.RunCommand("image", "prune", "-f")
 
+	return nil
+}
+
+func (d *Docker) Reload(conf *config.Config) error {
+	data := conf.GetData()
+	dataDir := data.InstallDir
+
+	d.logger.Info("Starting container reload with latest environment variables")
+
+	// Ensure network exists
+	if _, err := d.RunCommand("network", "inspect", NetworkName); err != nil {
+		d.logger.Info("Creating Docker network %s", NetworkName)
+		if _, err := d.RunCommand("network", "create", NetworkName); err != nil {
+			return fmt.Errorf("create network: %w", err)
+		}
+		d.logger.Success("Network created")
+	}
+
+	// Find which app container is running
+	currentName := ""
+	if d.IsRunning(AppNamePrimary) {
+		currentName = AppNamePrimary
+	} else if d.IsRunning(AppNameSecondary) {
+		currentName = AppNameSecondary
+	} else {
+		d.logger.Warn("No app container running, will deploy primary")
+		currentName = AppNamePrimary
+	}
+
+	d.logger.Info("Restarting app container: %s", currentName)
+	d.StopAndRemove(currentName)
+
+	// Deploy the app container
+	if err := d.DeployApp(data, currentName); err != nil {
+		return fmt.Errorf("failed to redeploy app container %s: %w", currentName, err)
+	}
+
+	if err := d.waitForAppHealth(currentName); err != nil {
+		d.StopAndRemove(currentName)
+		return fmt.Errorf("app %s not healthy after restart: %w", currentName, err)
+	}
+
+	// Restart Caddy container
+	if d.IsRunning(CaddyName) {
+		d.logger.Info("Restarting Caddy container")
+
+		caddyFile := filepath.Join(dataDir, "Caddyfile")
+		caddyContent, err := d.generateCaddyfile(data)
+		if err != nil {
+			return fmt.Errorf("generate Caddyfile: %w", err)
+		}
+
+		// Write the Caddyfile
+		if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
+			return fmt.Errorf("write Caddyfile: %w", err)
+		}
+
+		// Stop and remove Caddy
+		d.StopAndRemove(CaddyName)
+
+		if err := d.deployCaddy(data, caddyFile); err != nil {
+			return fmt.Errorf("failed to redeploy Caddy: %w", err)
+		}
+	}
+
+	d.logger.Success("Containers reloaded successfully with new environment variables")
 	return nil
 }
 
