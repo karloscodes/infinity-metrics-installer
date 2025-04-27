@@ -124,7 +124,7 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
-			if _, err := d.RunCommand("pull", "--pull-always", image); err == nil {
+			if _, err := d.RunCommand("pull", image); err == nil {
 				d.logger.Success("%s pulled successfully", image)
 				d.logImageDigest(image)
 				break
@@ -176,7 +176,7 @@ func (d *Docker) Update(conf *config.Config) error {
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
-			if _, err := d.RunCommand("pull", "--pull-always", image); err == nil {
+			if _, err := d.RunCommand("pull", image); err == nil {
 				d.logger.Success("%s pulled successfully", image)
 				d.logImageDigest(image)
 				break

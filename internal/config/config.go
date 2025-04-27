@@ -90,7 +90,10 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 		if len(ips) == 0 {
-			fmt.Println("Error: No A/AAAA records found for the domain. Please set up the DNS records and try again.")
+			fmt.Println("Error: No A/AAAA records found for the provided domain. Please set up the DNS records and try again.")
+			fmt.Println("Note:")
+			fmt.Println("DNS propagation may take from a few minutes to hours to complete.")
+			fmt.Println("You can check the DNS records at https://mxtoolbox.com/SuperTool.aspx or https://dnschecker.org/")
 			continue
 		}
 
