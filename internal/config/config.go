@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -64,8 +65,176 @@ func NewConfig(logger *logging.Logger) *Config {
 	}
 }
 
+// Helper function to get the current server's primary public IP address
+func getCurrentServerIP() (string, error) {
+	// Try to get IPs from multiple external services for better reliability
+	externalServices := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+
+	var publicIPs []string
+
+	// Try external services first
+	for _, service := range externalServices {
+		resp, err := http.Get(service)
+		if err == nil {
+			defer resp.Body.Close()
+			ip, err := io.ReadAll(resp.Body)
+			if err == nil && len(ip) > 0 {
+				publicIP := strings.TrimSpace(string(ip))
+				publicIPs = append(publicIPs, publicIP)
+				break // We got a valid IP, no need to try other services
+			}
+		}
+	}
+
+	// Also collect all local interface IPs
+	var localIPs []string
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// If we have at least one public IP from external services, return that
+		if len(publicIPs) > 0 {
+			return publicIPs[0], nil
+		}
+		return "", err
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback and interfaces that are down
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip loopback addresses
+			if ip.IsLoopback() {
+				continue
+			}
+
+			// Only consider IPv4 addresses for simplicity
+			if ip4 := ip.To4(); ip4 != nil {
+				localIPs = append(localIPs, ip4.String())
+			}
+		}
+	}
+
+	// Return results
+	if len(publicIPs) > 0 {
+		return publicIPs[0], nil
+	}
+
+	if len(localIPs) > 0 {
+		return strings.Join(localIPs, ","), nil
+	}
+
+	return "", fmt.Errorf("unable to determine server IP")
+}
+
+// Helper function to check domain against multiple IPs
+func checkDomainIPMatch(domain string, serverIPs string) (bool, string) {
+	ips, err := net.LookupIP(domain)
+	if err != nil || len(ips) == 0 {
+		return false, ""
+	}
+
+	// Convert comma-separated IPs to slice
+	serverIPList := strings.Split(serverIPs, ",")
+
+	var domainIPStrings []string
+	for _, ip := range ips {
+		ipStr := ip.String()
+		domainIPStrings = append(domainIPStrings, ipStr)
+
+		// Check if this domain IP matches any server IP
+		for _, serverIP := range serverIPList {
+			if ipStr == serverIP {
+				return true, ipStr
+			}
+		}
+	}
+
+	// No match found, return false and the domain IPs
+	return false, strings.Join(domainIPStrings, ", ")
+}
+
 // CollectFromUser gets required user input upfront
 func (c *Config) CollectFromUser(reader *bufio.Reader) error {
+	// If we're in test mode and should skip DNS validation, use a simplified approach
+	if os.Getenv("SKIP_DNS_VALIDATION") == "1" {
+		c.logger.Info("Skipping DNS validation due to SKIP_DNS_VALIDATION=1")
+
+		// Read all fields as usual but don't validate domain
+		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
+		domain, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read domain: %w", err)
+		}
+		c.data.Domain = strings.TrimSpace(domain)
+
+		fmt.Print("Enter admin email address: ")
+		adminEmail, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read admin email: %w", err)
+		}
+		c.data.AdminEmail = strings.TrimSpace(adminEmail)
+
+		fmt.Print("Enter your Infinity Metrics license key: ")
+		licenseKey, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read license key: %w", err)
+		}
+		c.data.LicenseKey = strings.TrimSpace(licenseKey)
+
+		// If admin password is provided via env, use it
+		adminPassword := os.Getenv("ADMIN_PASSWORD")
+		if adminPassword != "" {
+			c.data.AdminPassword = adminPassword
+			c.logger.Info("Using admin password from environment variable")
+		} else {
+			// Otherwise read password from input
+			fmt.Print("Enter admin password (minimum 8 characters): ")
+			passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				return fmt.Errorf("failed to read password: %w", err)
+			}
+			fmt.Println()
+			c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
+
+			fmt.Print("Confirm admin password: ")
+			confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				return fmt.Errorf("failed to read confirmation password: %w", err)
+			}
+			fmt.Println()
+
+			confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
+			if c.data.AdminPassword != confirmPassword {
+				return fmt.Errorf("passwords do not match")
+			}
+		}
+
+		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+		c.logger.Success("Configuration collected (DNS validation skipped)")
+		return nil
+	}
+
+	// Regular collection with DNS validation for normal (non-test) mode
 	for {
 		c.data.Domain = ""
 		c.data.AdminEmail = ""
@@ -84,9 +253,15 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
+		fmt.Printf("Verifying DNS records for %s...\n", c.data.Domain)
 		ips, err := net.LookupIP(c.data.Domain)
 		if err != nil {
 			fmt.Printf("Error: Invalid domain: %v\n", err)
+			fmt.Println("Suggestions:")
+			fmt.Println("1. Check that your domain is registered and DNS is configured correctly.")
+			fmt.Println("2. Make sure your A/AAAA records point to the IP address of this server.")
+			fmt.Println("3. If you just updated your DNS records, they may take time to propagate (1-48 hours).")
+			fmt.Println("4. Verify your DNS records using an online tool like https://dnschecker.org/")
 			continue
 		}
 		if len(ips) == 0 {
@@ -95,6 +270,36 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("DNS propagation may take from a few minutes to hours to complete.")
 			fmt.Println("You can check the DNS records at https://mxtoolbox.com/SuperTool.aspx or https://dnschecker.org/")
 			continue
+		}
+
+		// Enhanced verification: Check if domain resolves to one of the server's IPs
+		fmt.Println("Detecting server IP addresses...")
+		serverIPs, err := getCurrentServerIP()
+		if err != nil {
+			c.logger.Warn("Unable to determine server IP addresses: %v", err)
+			fmt.Println("Warning: Could not determine this server's IP addresses.")
+			fmt.Printf("Your domain resolves to: %s\n", formatIPs(ips))
+			fmt.Println("Please verify manually that one of these IPs matches this server.")
+		} else {
+			fmt.Printf("Server IP address(es): %s\n", serverIPs)
+			fmt.Printf("Domain %s resolves to: %s\n", c.data.Domain, formatIPs(ips))
+
+			match, matchedIP := checkDomainIPMatch(c.data.Domain, serverIPs)
+			if !match {
+				fmt.Printf("Warning: Your domain %s does not appear to resolve to this server.\n", c.data.Domain)
+				fmt.Println("This may cause SSL certificate validation to fail.")
+				fmt.Println("Options:")
+				fmt.Println("1. Update your domain's DNS records to point to one of this server's IPs")
+				fmt.Println("2. Ensure you're running this installer on the correct server")
+				fmt.Print("Do you want to continue anyway? [y/N]: ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(strings.ToLower(confirm))
+				if confirm != "y" && confirm != "yes" {
+					continue
+				}
+			} else {
+				fmt.Printf("Success: Domain %s correctly resolves to this server's IP (%s)\n", c.data.Domain, matchedIP)
+			}
 		}
 
 		fmt.Print("Enter admin email address: ")
@@ -168,7 +373,7 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
-		fmt.Printf("%s => %s\n", c.data.Domain, ips)
+		fmt.Printf("%s => %s\n", c.data.Domain, formatIPs(ips))
 		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
 		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
 		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
@@ -190,6 +395,15 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 
 	c.logger.Success("Configuration collected from user")
 	return nil
+}
+
+// Helper function to format IPs for display
+func formatIPs(ips []net.IP) string {
+	ipStrings := make([]string, len(ips))
+	for i, ip := range ips {
+		ipStrings[i] = ip.String()
+	}
+	return strings.Join(ipStrings, ", ")
 }
 
 // LoadFromFile loads local config from .env

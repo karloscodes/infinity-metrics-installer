@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"syscall"
@@ -115,9 +116,52 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Installation completed in %s", elapsedTime)
+
+	// Verify the installation
+	logger.Info("Verifying installation...")
+	err = inst.VerifyInstallation()
+	if err != nil {
+		logger.Warn("Installation verification had issues: %v", err)
+		logger.Info("You may need to troubleshoot these issues before using Infinity Metrics")
+	} else {
+		logger.Success("Installation verified successfully")
+	}
+
 	data := inst.GetConfig().GetData()
 	logger.InfoWithTime("Access your dashboard at https://%s", data.Domain)
+	logger.Info("Login with your admin email: %s", data.AdminEmail)
+	logger.Info("First-time login steps:")
+	logger.Info("1. Confirm your organization name")
+	logger.Info("2. Set your time zone")
+	logger.Info("3. Choose your initial data sources to connect")
+
+	// Check ports 80 and 443
+	portCheck80 := checkPort(80)
+	portCheck443 := checkPort(443)
+
+	if !portCheck80 || !portCheck443 {
+		logger.Warn("Important: One or more required ports are not available:")
+		if !portCheck80 {
+			logger.Warn("- Port 80 is not available (required for HTTP)")
+		}
+		if !portCheck443 {
+			logger.Warn("- Port 443 is not available (required for HTTPS)")
+		}
+		logger.Warn("This may prevent SSL certificate generation and web access to your installation.")
+		logger.Warn("Please ensure these ports are open in your firewall and not used by other services.")
+	}
+
 	os.Stdout.Sync() // Force flush to ensure output is captured
+}
+
+// checkPort checks if a port is available
+func checkPort(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
 }
 
 func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
