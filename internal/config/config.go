@@ -389,15 +389,33 @@ func (c *Config) fetchConfigJSON(url string) error {
 	return nil
 }
 
+// GetCaddyImage returns the Caddy image to use
+func (c *Config) GetCaddyImage() string {
+	return c.data.CaddyImage
+}
+
+// SetCaddyImage sets the Caddy image to use
+func (c *Config) SetCaddyImage(image string) {
+	c.data.CaddyImage = image
+}
+
 // GetData returns the config data
 func (c *Config) GetData() ConfigData {
 	return c.data
 }
 
-// SetCaddyImage sets the CaddyImage field in ConfigData
-func (c *Config) SetCaddyImage(image string) {
-	c.data.CaddyImage = image
-	c.logger.Info("CaddyImage updated to: %s", image)
+// DockerImages contains both app and caddy image information
+type DockerImages struct {
+	AppImage   string
+	CaddyImage string
+}
+
+// GetDockerImages returns both Docker images in a structured way
+func (c *Config) GetDockerImages() DockerImages {
+	return DockerImages{
+		AppImage:   c.data.AppImage,
+		CaddyImage: c.data.CaddyImage,
+	}
 }
 
 // SetInstallDir sets the InstallDir field in ConfigData

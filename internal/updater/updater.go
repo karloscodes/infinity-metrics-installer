@@ -64,8 +64,8 @@ func (u *Updater) Run(currentVersion string) error {
 		u.logger.Warn("Server config fetch failed, using local: %v", err)
 	}
 
-	// Fetch the latest version and Caddy image from GitHub
-	latestVersion, binaryURL, caddyImage, err := u.getLatestVersionAndBinaryURL()
+	// Fetch the latest version from GitHub
+	latestVersion, binaryURL, err := u.getLatestVersionAndBinaryURL()
 	if err != nil {
 		u.logger.Warn("Failed to fetch latest version from GitHub: %v", err)
 		latestVersion = extractVersionFromURL(u.config.GetData().InstallerURL)
@@ -73,9 +73,11 @@ func (u *Updater) Run(currentVersion string) error {
 			u.logger.Warn("Could not determine latest version from URL: %s", u.config.GetData().InstallerURL)
 		}
 	} else {
-		// Update CaddyImage in config if fetched successfully
-		u.config.SetCaddyImage(caddyImage)
-		u.logger.Info("Updated Caddy image to: %s", caddyImage)
+		// Use the unified DockerImages struct to handle both images consistently
+		dockerImages := u.config.GetDockerImages()
+		u.logger.Info("Using images from config.json:")
+		u.logger.Info("  - App image: %s", dockerImages.AppImage)
+		u.logger.Info("  - Caddy image: %s", dockerImages.CaddyImage)
 	}
 
 	// Compare versions and update binary if necessary
@@ -123,7 +125,7 @@ func (u *Updater) Run(currentVersion string) error {
 	return nil
 }
 
-func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error) {
+func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
 	u.logger.Info("Fetching latest release from GitHub: %s", GitHubAPIURL)
 
 	client := &http.Client{
@@ -132,12 +134,12 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error)
 
 	resp, err := client.Get(GitHubAPIURL)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to fetch latest release: %w", err)
+		return "", "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", "", fmt.Errorf("failed to fetch latest release, status: %s", resp.Status)
+		return "", "", fmt.Errorf("failed to fetch latest release, status: %s", resp.Status)
 	}
 
 	var release struct {
@@ -148,12 +150,12 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error)
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", "", "", fmt.Errorf("failed to parse release JSON: %w", err)
+		return "", "", fmt.Errorf("failed to parse release JSON: %w", err)
 	}
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	if latestVersion == "" {
-		return "", "", "", fmt.Errorf("invalid version in release tag: %s", release.TagName)
+		return "", "", fmt.Errorf("invalid version in release tag: %s", release.TagName)
 	}
 
 	arch := runtime.GOARCH
@@ -167,13 +169,10 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, string, error)
 	}
 
 	if binaryURL == "" {
-		return latestVersion, "", "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
+		return latestVersion, "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
 	}
 
-	// Assume Caddy version matches the release version (e.g., "2.9" -> "caddy:2.9")
-	caddyImage := fmt.Sprintf("caddy:%s", latestVersion)
-
-	return latestVersion, binaryURL, caddyImage, nil
+	return latestVersion, binaryURL, nil
 }
 
 func (u *Updater) update() error {

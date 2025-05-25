@@ -172,8 +172,9 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.logger.Success("Network created")
 	}
 
-	// Pull new images
-	for _, image := range []string{data.AppImage, data.CaddyImage} {
+	// Pull new images using the unified DockerImages struct
+	dockerImages := conf.GetDockerImages()
+	for _, image := range []string{dockerImages.AppImage, dockerImages.CaddyImage} {
 		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
 			if _, err := d.RunCommand("pull", image); err == nil {
