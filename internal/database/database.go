@@ -26,10 +26,10 @@ const (
 
 // BackupFile represents a database backup file
 type BackupFile struct {
-	name     string
-	path     string
+	name       string
+	path       string
 	backupType BackupType
-	createdAt time.Time
+	createdAt  time.Time
 }
 
 // RetentionConfig defines the retention period for each backup type
@@ -233,10 +233,10 @@ func (d *Database) ListBackups(backupDir string) ([]BackupFile, error) {
 			backupType := determineBackupType(createdAt)
 
 			backups = append(backups, BackupFile{
-				name:      file.Name(),
-				path:      filepath.Join(backupDir, file.Name()),
+				name:       file.Name(),
+				path:       filepath.Join(backupDir, file.Name()),
 				backupType: backupType,
-				createdAt: createdAt,
+				createdAt:  createdAt,
 			})
 		}
 	}
