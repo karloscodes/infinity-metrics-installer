@@ -94,7 +94,6 @@ func initLogging() *logging.Logger {
 }
 
 func runInstall(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
-	fmt.Println("Starting Infinity Metrics Installation")
 	logger.Debug("Initializing installation environment")
 
 	// Create a bufio.Reader to read user input from stdin
@@ -165,7 +164,6 @@ func checkPort(port int) bool {
 }
 
 func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
-	fmt.Println("Starting Infinity Metrics Update")
 	logger.Debug("Initializing update environment")
 
 	updater := updater.NewUpdater(logger)
@@ -181,8 +179,6 @@ func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time
 }
 
 func runRestore(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
-	fmt.Println("Starting Infinity Metrics Restore")
-
 	logger.Info("Running restore...")
 	err := inst.Restore()
 	if err != nil {
