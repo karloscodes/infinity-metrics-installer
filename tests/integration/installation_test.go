@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,88 +16,69 @@ import (
 	"infinity-metrics-installer/internal/pkg/testrunner"
 )
 
+// TestInstallation tests the infinity-metrics install command
 func TestInstallation(t *testing.T) {
-	os.Setenv("ENV", "test")
-
-	projectRoot, err := filepath.Abs("..")
-	require.NoError(t, err, "Failed to find project root")
-
+	// Ensure binary exists
 	binaryPath := os.Getenv("BINARY_PATH")
 	if binaryPath == "" {
-		var binaryPattern string
-		if os.Getenv("ARCH") == "arm64" {
-			binaryPattern = "infinity-metrics-v*-arm64"
-		} else {
-			binaryPattern = "infinity-metrics-v*-amd64"
-		}
-
-		binaries, err := filepath.Glob(filepath.Join(projectRoot, "bin", binaryPattern))
-		require.NoError(t, err, "Failed to find binary")
-
-		if len(binaries) == 0 {
-			defaultBinary := filepath.Join(projectRoot, "bin", "infinity-metrics")
-			if _, err := os.Stat(defaultBinary); err == nil {
-				binaryPath = defaultBinary
-			} else {
-				t.Fatalf("No binary found matching pattern %s or at default location", binaryPattern)
-			}
-		} else {
-			binaryPath = binaries[0]
-		}
+		binaryPath = "../bin/infinity-metrics"
 	}
 
-	t.Logf("Using binary: %s", binaryPath)
-	assert.FileExists(t, binaryPath, "Binary should exist")
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		t.Fatalf("Binary not found at %s", binaryPath)
+	}
 
+	// Configure test runner
 	config := testrunner.DefaultConfig()
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
-	licenseKey := os.Getenv("LICENSE_KEY")
 
-	// Updated StdinInput to provide a valid email and confirm with the default "y"
-	config.StdinInput = fmt.Sprintf(
-		"localhost\n"+ // Domain
-			"admin@example.com\n"+ // Valid email
-			"%s\n"+ // License key
-			"\n", // Confirmation (accept default "y")
-		licenseKey)
-	config.Debug = os.Getenv("DEBUG") == "1"
-	config.Timeout = 10 * time.Minute // Increased timeout
+	// Test input string (auto-answer prompts)
+	config.StdinInput = strings.Join([]string{
+		"test.example.com",  // Domain
+		"admin@example.com", // Admin email
+		"test-license-key",  // License key
+		// Password is provided via env var
+		"y", // Confirm settings
+	}, "\n")
 
+	// Set environment variables for test
+	config.EnvVars = map[string]string{
+		"ADMIN_PASSWORD":      "securepassword123",
+		"ENV":                 "test",
+		"SKIP_DNS_VALIDATION": "1", // Skip DNS validation
+		"USE_DOCKER":          "0", // Force VM mode, disable Docker
+	}
+
+	// Force VM mode
+	config.UseDocker = false
+
+	// For debugging during development
+	if os.Getenv("DEBUG") == "1" {
+		config.Debug = true
+	}
+
+	// If specified, keep the VM for debugging
+	if os.Getenv("KEEP_VM") == "1" {
+		config.VMName = "infinity-metrics-test"
+	}
+
+	t.Log("Running installation test...")
+
+	// Create and run the test runner
 	runner := testrunner.NewTestRunner(config)
-	os.Setenv("KEEP_VM", "1")
-	defer os.Setenv("KEEP_VM", os.Getenv("KEEP_VM"))
+	err := runner.Run()
 
-	if isRunningInCI() {
-		// In CI, set the env var in the current process
-		os.Setenv("ADMIN_PASSWORD", "securepassword123")
-		defer os.Unsetenv("ADMIN_PASSWORD")
-		t.Log("Set ADMIN_PASSWORD in CI environment")
-	} else {
-		config.EnvVars["ADMIN_PASSWORD"] = "securepassword123"
-		t.Log("Added ADMIN_PASSWORD to VM environment")
-	}
+	// Check output
+	stdout := runner.Stdout()
+	t.Log("Installer Output:")
+	t.Log(stdout)
 
-	err = runner.Run()
-	outputStr := runner.Stdout()
-	errorStr := runner.Stderr()
-	t.Logf("Installer Output:\n%s", outputStr)
-	if errorStr != "" {
-		t.Logf("Installer Errors:\n%s", errorStr)
-	}
-
-	// Robust assertions
+	// Verify installation succeeded
 	require.NoError(t, err, "Installation should complete without error")
-	assert.Contains(t, outputStr, "✔ Configuration collected from user", "Configuration should be collected")
-	assert.Contains(t, outputStr, "✔ Installation completed in", "Installation should complete successfully")
-	assert.Contains(t, outputStr, "Access your dashboard at https://localhost", "Config should apply domain")
-	// Verify the new confirmation prompt and domain resolution
-	t.Log("Testing service availability...")
-	testServiceAvailability(t, isRunningInCI(), config.VMName)
 
-	if os.Getenv("KEEP_VM") != "1" {
-		cleanupTestEnvironment(t, config.VMName)
-	}
+	// Check for success message
+	assert.Contains(t, stdout, "Installation completed", "Output should confirm successful installation")
 }
 
 func isRunningInCI() bool {

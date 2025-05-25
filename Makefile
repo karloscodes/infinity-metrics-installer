@@ -22,7 +22,7 @@ IN_GITHUB_ACTIONS := $(if $(GITHUB_ACTIONS),true,false)
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test test-local test-ci test-short lint deps help release build-linux install-multipass
+.PHONY: all build clean test test-local test-ci test-short lint deps help release build-linux install-multipass vm-create vm-check vm-delete vm-shell e2e-test
 
 all: test build
 
@@ -122,3 +122,24 @@ endif
 
 start-test-vm:
 	bash scripts/start-vm.sh
+
+# VM management targets
+vm-create:
+	@echo "Creating test VM with x86_64 architecture..."
+	@./scripts/start-vm.sh
+
+vm-check:
+	@echo "Checking VM architecture and connectivity..."
+	@./scripts/verify-vm.sh
+
+vm-delete:
+	@echo "Deleting test VM..."
+	@multipass delete infinity-vm --purge
+
+vm-shell:
+	@echo "Opening shell to test VM..."
+	@multipass shell infinity-vm
+
+e2e-test:
+	@echo "Running end-to-end tests..."
+	@./scripts/run-e2e-tests.sh
