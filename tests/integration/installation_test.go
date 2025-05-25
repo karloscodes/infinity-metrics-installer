@@ -27,6 +27,12 @@ func TestInstallation(t *testing.T) {
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
 		t.Fatalf("Binary not found at %s", binaryPath)
 	}
+	
+	// Check for VM provider from environment
+	vmProvider := os.Getenv("VM_PROVIDER")
+	if vmProvider != "" {
+		t.Logf("Using VM provider from environment: %s", vmProvider)
+	}
 
 	// Configure test runner
 	config := testrunner.DefaultConfig()

@@ -56,7 +56,7 @@ install-gotestsum:
 test-unit: install-gotestsum
 	$(shell go env GOPATH)/bin/gotestsum --format=short-verbose -- ./internal/...
 
-# Run all integration tests using go test (in tests/integration), mimicking previous working logic
+# Run all integration tests using go test (in tests/integration)
 test-integration: clean build-linux
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
@@ -64,28 +64,32 @@ test-integration: clean build-linux
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
 	fi
 	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"
-	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
-	DEBUG=1 \
-	$(GOTEST) -v ./tests/integration
+	@echo "Using Multipass for VM testing"
+	@BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) VM_PROVIDER=multipass DEBUG=1 $(GOTEST) -v ./tests/integration
 
 # Run all tests (unit + integration)
 test: install-gotestsum
 	make test-unit
 	make test-integration
 
+# Check for VM provider
+check-vm-provider:
+	@echo "VM_PROVIDER=multipass" > .vm_provider; \
+	echo "Using Multipass for VM testing"; \
+	make install-multipass
+
 # Run all tests (will use appropriate runner based on environment)
-test-local: clean build-linux install-multipass
+test-local: clean build-linux check-vm-provider
 	@echo "Running tests in local environment"
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
 	else \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
 	fi
-	
-	@echo "Running tests with KEEP_VM=$(KEEP_VM)"
-	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
-	DEBUG=1 \
-	$(GOTEST) -v ./tests
+	@echo "Running e2e tests with KEEP_VM=$(KEEP_VM)"
+	@VM_PROVIDER=$$(cat .vm_provider | cut -d= -f2) && \
+	echo "Using VM provider: $$VM_PROVIDER" && \
+	KEEP_VM=$(KEEP_VM) DEBUG=1 VM_PROVIDER=$$VM_PROVIDER ./scripts/e2e-test.sh
 	
 test-ci: build-linux
 	@echo "Running tests in CI environment"
