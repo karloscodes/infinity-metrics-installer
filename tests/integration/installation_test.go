@@ -47,11 +47,9 @@ func TestInstallation(t *testing.T) {
 		"ADMIN_PASSWORD":      "securepassword123",
 		"ENV":                 "test",
 		"SKIP_DNS_VALIDATION": "1", // Skip DNS validation
-		"USE_DOCKER":          "0", // Force VM mode, disable Docker
 	}
 
-	// Force VM mode
-	config.UseDocker = false
+	// Use VM mode for testing
 
 	// For debugging during development
 	if os.Getenv("DEBUG") == "1" {
@@ -167,9 +165,5 @@ func cleanupTestEnvironment(t *testing.T, vmName string) {
 	cmd := exec.Command("multipass", "delete", "--purge", vmName)
 	if err := cmd.Run(); err != nil {
 		t.Logf("Failed to delete VM %s: %v", vmName, err)
-	}
-	cmd = exec.Command("docker", "system", "prune", "-f")
-	if err := cmd.Run(); err != nil {
-		t.Logf("Failed to prune Docker: %v", err)
 	}
 }
