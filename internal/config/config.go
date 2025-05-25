@@ -400,6 +400,20 @@ func (c *Config) SetCaddyImage(image string) {
 	c.logger.Info("CaddyImage updated to: %s", image)
 }
 
+// DockerImages contains both app and caddy image information
+type DockerImages struct {
+	AppImage   string
+	CaddyImage string
+}
+
+// GetDockerImages returns both Docker images in a structured way
+func (c *Config) GetDockerImages() DockerImages {
+	return DockerImages{
+		AppImage:   c.data.AppImage,
+		CaddyImage: c.data.CaddyImage,
+	}
+}
+
 // SetInstallDir sets the InstallDir field in ConfigData
 func (c *Config) SetInstallDir(dir string) {
 	c.data.InstallDir = dir
