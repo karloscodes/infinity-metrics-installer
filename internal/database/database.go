@@ -15,21 +15,50 @@ import (
 	"infinity-metrics-installer/internal/logging"
 )
 
+// BackupType represents the type of backup (daily, weekly, monthly)
+type BackupType string
+
+const (
+	Daily   BackupType = "daily"
+	Weekly  BackupType = "weekly"
+	Monthly BackupType = "monthly"
+)
+
 // BackupFile represents a database backup file
 type BackupFile struct {
-	name string
-	path string
+	name     string
+	path     string
+	backupType BackupType
+	createdAt time.Time
+}
+
+// RetentionConfig defines the retention period for each backup type
+type RetentionConfig struct {
+	DailyRetentionDays   int
+	WeeklyRetentionDays  int
+	MonthlyRetentionDays int
+}
+
+// DefaultRetentionConfig provides default retention values
+func DefaultRetentionConfig() RetentionConfig {
+	return RetentionConfig{
+		DailyRetentionDays:   7,  // Keep daily backups for 7 days
+		WeeklyRetentionDays:  14, // Keep weekly backups for 2 weeks
+		MonthlyRetentionDays: 90, // Keep monthly backups for 3 months
+	}
 }
 
 // Database manages database operations
 type Database struct {
-	logger *logging.Logger
+	logger    *logging.Logger
+	retention RetentionConfig
 }
 
 // NewDatabase creates a new Database instance
 func NewDatabase(logger *logging.Logger) *Database {
 	return &Database{
-		logger: logger,
+		logger:    logger,
+		retention: DefaultRetentionConfig(),
 	}
 }
 
@@ -60,6 +89,69 @@ func (d *Database) EnsureSQLiteInstalled() error {
 	verifyCmd := exec.Command("sqlite3", "--version")
 	if err := verifyCmd.Run(); err != nil {
 		return fmt.Errorf("SQLite installation verification failed: %w", err)
+	}
+
+	return nil
+}
+
+// determineBackupType determines the type of backup based on its creation time
+func determineBackupType(createdAt time.Time) BackupType {
+	// If it's the first day of the month, it's a monthly backup
+	if createdAt.Day() == 1 {
+		return Monthly
+	}
+	// If it's Sunday, it's a weekly backup
+	if createdAt.Weekday() == time.Sunday {
+		return Weekly
+	}
+	// Otherwise, it's a daily backup
+	return Daily
+}
+
+// cleanupOldBackups removes old backups according to retention policy
+// SetRetentionConfig updates the retention configuration
+func (d *Database) SetRetentionConfig(config RetentionConfig) {
+	d.retention = config
+	d.logger.Info("Updated backup retention config: daily=%d days, weekly=%d days, monthly=%d days",
+		config.DailyRetentionDays, config.WeeklyRetentionDays, config.MonthlyRetentionDays)
+}
+
+// GetRetentionConfig returns the current retention configuration
+func (d *Database) GetRetentionConfig() RetentionConfig {
+	return d.retention
+}
+
+func (d *Database) cleanupOldBackups(backupDir string) error {
+	backups, err := d.ListBackups(backupDir)
+	if err != nil {
+		return fmt.Errorf("failed to list backups: %w", err)
+	}
+
+	// Convert retention days to durations
+	dailyRetention := time.Duration(d.retention.DailyRetentionDays) * 24 * time.Hour
+	weeklyRetention := time.Duration(d.retention.WeeklyRetentionDays) * 24 * time.Hour
+	monthlyRetention := time.Duration(d.retention.MonthlyRetentionDays) * 24 * time.Hour
+
+	now := time.Now()
+	for _, backup := range backups {
+		age := now.Sub(backup.createdAt)
+
+		shouldDelete := false
+		switch backup.backupType {
+		case Daily:
+			shouldDelete = age > dailyRetention
+		case Weekly:
+			shouldDelete = age > weeklyRetention
+		case Monthly:
+			shouldDelete = age > monthlyRetention
+		}
+
+		if shouldDelete {
+			d.logger.Info("Removing old %s backup: %s (age: %v)", backup.backupType, backup.name, age.Round(time.Hour))
+			if err := os.Remove(backup.path); err != nil {
+				d.logger.Warn("Failed to remove old backup %s: %v", backup.name, err)
+			}
+		}
 	}
 
 	return nil
@@ -110,6 +202,12 @@ func (d *Database) BackupDatabase(dbPath, backupDir string) (string, error) {
 	}
 
 	d.logger.Success("Database backup created at %s (size: %d bytes)", backupFile, backupInfo.Size())
+
+	// Clean up old backups according to retention policy
+	if err := d.cleanupOldBackups(backupDir); err != nil {
+		d.logger.Warn("Failed to clean up old backups: %v", err)
+	}
+
 	return backupFile, nil
 }
 
@@ -123,16 +221,29 @@ func (d *Database) ListBackups(backupDir string) ([]BackupFile, error) {
 	var backups []BackupFile
 	for _, file := range files {
 		if !file.IsDir() && strings.HasPrefix(file.Name(), "backup_") && strings.HasSuffix(file.Name(), ".db") {
+			// Parse timestamp from filename (format: backup_20060102_150405.db)
+			timePart := strings.TrimPrefix(strings.TrimSuffix(file.Name(), ".db"), "backup_")
+			createdAt, err := time.Parse("20060102_150405", timePart)
+			if err != nil {
+				d.logger.Warn("Skipping backup with invalid timestamp: %s", file.Name())
+				continue
+			}
+
+			// Determine backup type
+			backupType := determineBackupType(createdAt)
+
 			backups = append(backups, BackupFile{
-				name: file.Name(),
-				path: filepath.Join(backupDir, file.Name()),
+				name:      file.Name(),
+				path:      filepath.Join(backupDir, file.Name()),
+				backupType: backupType,
+				createdAt: createdAt,
 			})
 		}
 	}
 
-	// Sort by name (timestamp) descending
+	// Sort by creation time descending
 	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].name > backups[j].name
+		return backups[i].createdAt.After(backups[j].createdAt)
 	})
 
 	return backups, nil

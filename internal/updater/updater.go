@@ -195,6 +195,7 @@ func (u *Updater) update() error {
 
 	mainDBPath := u.config.GetMainDBPath()
 	backupDir := u.config.GetData().BackupPath
+	// Always backup database before update
 	if _, err := u.database.BackupDatabase(mainDBPath, backupDir); err != nil {
 		u.logger.Warn("Failed to backup database before update: %v", err)
 		u.logger.Warn("Proceeding with update without backup")
@@ -239,7 +240,7 @@ func (u *Updater) updateBinary(url, binaryPath string) error {
 
 	// Try to write a test file to /tmp
 	testFile := "/tmp/infinity-metrics-test"
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
 		u.logger.Info("Test write to /tmp failed: %v", err)
 	} else {
 		u.logger.Info("Test write to /tmp succeeded, removing test file")
