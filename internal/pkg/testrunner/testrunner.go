@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -57,7 +56,6 @@ type TestRunner struct {
 	stdout bytes.Buffer
 	stderr bytes.Buffer
 	Logger io.Writer
-	vmProvider VMProvider
 }
 
 // NewTestRunner creates a new TestRunner
@@ -71,7 +69,6 @@ func NewTestRunner(config Config) *TestRunner {
 		Config: config,
 		env:    env,
 		Logger: os.Stdout,
-		vmProvider: NewVMProvider(),
 	}
 }
 
@@ -81,10 +78,9 @@ func (r *TestRunner) Run() error {
 	r.logf("Binary path: %s", r.Config.BinaryPath)
 	r.logf("Environment variables: %v", r.Config.EnvVars)
 
-	switch r.env {
-	case CIEnvironment:
+	if r.env == CIEnvironment {
 		return r.runInCI()
-	default:
+	} else {
 		return r.runLocally()
 	}
 }
@@ -117,85 +113,105 @@ func (r *TestRunner) runInCI() error {
 	return r.runWithTimeout(cmd)
 }
 
-// runLocally runs the command in a VM
+// runLocally runs the command in a multipass VM
 func (r *TestRunner) runLocally() error {
-	r.logf("Running in local environment with %s VM", r.vmProvider.Name())
+	r.logf("Running in local environment with Multipass VM")
 
-	// Check for VM provider
-	if !r.vmProvider.IsInstalled() {
-		return fmt.Errorf("%s not found, please install it first", r.vmProvider.Name())
-	}
-
-	// Make sure VM name is not empty
-	if r.Config.VMName == "" {
-		r.Config.VMName = fmt.Sprintf("infinity-test-%d", time.Now().Unix())
-		r.logf("VM name was empty, generated name: %s", r.Config.VMName)
+	// Check for multipass availability
+	if _, err := exec.LookPath("multipass"); err != nil {
+		return fmt.Errorf("multipass not found, please install it first: %w", err)
 	}
 
 	// Clean up existing VM if needed
-	r.logf("Cleaning up any existing VM with the same name: %s", r.Config.VMName)
-	r.vmProvider.Delete(r.Config.VMName) // Ignore errors
+	r.logf("Cleaning up any existing VM: %s", r.Config.VMName)
+	cleanCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
+	cleanCmd.Run() // Ignore errors
 
-	// Create VM
+	// Create new VM
 	r.logf("Creating new VM: %s", r.Config.VMName)
+	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G"}
+	
+	// Add any additional flags
+	args = append(args, r.Config.MultipassFlags...)
 
-	// Prepare VM creation arguments
-	args := r.Config.MultipassFlags
+	launchCmd := exec.Command("multipass", args...)
+	launchOutput := &bytes.Buffer{}
+	launchCmd.Stdout = io.MultiWriter(launchOutput, r.Logger)
+	launchCmd.Stderr = io.MultiWriter(launchOutput, r.Logger)
 
-	// Add standard arguments for Ubuntu 22.04
-	args = append(args, "22.04")
-
-	r.logf("Launching VM with %s", r.vmProvider.Name())
-	if err := r.vmProvider.Create(r.Config.VMName, args); err != nil {
-		r.logf("VM launch failed: %s", err)
+	if err := launchCmd.Run(); err != nil {
+		r.logf("VM launch output: %s", launchOutput.String())
 		return fmt.Errorf("failed to launch VM: %w", err)
 	}
 
-	// Wait for VM to be ready with better SSH connectivity checks
-	r.logf("Waiting for VM to be ready with SSH connectivity")
-	r.logf("Waiting for VM to be ready...")
-	for i := 0; i < 30; i++ {
-		_, err := r.vmProvider.Exec(r.Config.VMName, "echo", "VM is ready")
+	// Wait for VM to be ready
+	r.logf("Waiting for VM to be ready")
+	vmReady := false
+	for i := 0; i < 60; i++ { // Give up to 60 seconds
+		cmd := exec.Command("multipass", "info", r.Config.VMName)
+		output, err := cmd.CombinedOutput()
+		outputStr := string(output)
+		r.logf("VM status check attempt %d/60: %v", i+1, err)
+
 		if err == nil {
-			break
+			r.logf("VM info output: %s", outputStr)
+			if strings.Contains(outputStr, "State:") && strings.Contains(outputStr, "Running") {
+				vmReady = true
+				r.logf("VM is ready after %d seconds", i+1)
+				break
+			}
 		}
-		if i == 29 {
-			return fmt.Errorf("VM did not become ready in time")
-		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 
-	// Check VM architecture
-	r.logf("Checking VM architecture")
-	archOutput, archErr := r.vmProvider.Exec(r.Config.VMName, "uname", "-m")
-	if archErr == nil {
-		arch := strings.TrimSpace(archOutput)
-		r.logf("VM architecture: %s", arch)
-		if arch != "x86_64" {
-			r.logf("WARNING: VM is not running with x86_64 architecture!")
-			if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-				r.logf("On Apple Silicon Macs, consider using Parallels Desktop for x86_64 VM support")
-			}
+	if !vmReady {
+		// Get detailed info about the VM for debugging
+		infoCmd := exec.Command("multipass", "info", r.Config.VMName, "--format", "yaml")
+		infoOutput, _ := infoCmd.CombinedOutput()
+		r.logf("Detailed VM info: \n%s", string(infoOutput))
+
+		// Try one more time with a different string check to be sure
+		finalCheckCmd := exec.Command("multipass", "list")
+		finalOutput, _ := finalCheckCmd.CombinedOutput()
+		if strings.Contains(string(finalOutput), r.Config.VMName) &&
+			strings.Contains(string(finalOutput), "Running") {
+			r.logf("VM appears to be ready based on 'multipass list' output")
+			vmReady = true
+		} else {
+			return fmt.Errorf("timeout waiting for VM to be ready")
 		}
 	}
 
 	// Before running the installer command, set the ENV variable in the VM
-	r.vmProvider.Exec(r.Config.VMName, "sudo", "sh", "-c", "echo 'export ENV=test' >> /etc/environment")
+	envSetCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c", "echo 'export ENV=test' >> /etc/environment")
+	envSetCmd.Run() // Run this before your installer command
 
 	// Copy binary to VM
 	r.logf("Copying binary to VM")
-	if err := r.vmProvider.Transfer(r.Config.BinaryPath, fmt.Sprintf("%s:/home/ubuntu/infinity-metrics", r.Config.VMName)); err != nil {
+	copyCmd := exec.Command("multipass", "transfer", r.Config.BinaryPath, fmt.Sprintf("%s:/home/ubuntu/infinity-metrics", r.Config.VMName))
+	copyCmd.Stdout = r.Logger
+	copyCmd.Stderr = r.Logger
+
+	if err := copyCmd.Run(); err != nil {
 		return fmt.Errorf("failed to copy binary to VM: %w", err)
 	}
 
 	// Make binary executable and move to system location
 	r.logf("Making binary executable")
-	if _, err := r.vmProvider.Exec(r.Config.VMName, "chmod", "+x", "/home/ubuntu/infinity-metrics"); err != nil {
+	execCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "chmod", "+x", "/home/ubuntu/infinity-metrics")
+	execCmd.Stdout = r.Logger
+	execCmd.Stderr = r.Logger
+
+	if err := execCmd.Run(); err != nil {
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
 	r.logf("Moving binary to system location")
-	if _, err := r.vmProvider.Exec(r.Config.VMName, "sudo", "mv", "/home/ubuntu/infinity-metrics", "/usr/local/bin/infinity-metrics"); err != nil {
+	moveCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "mv", "/home/ubuntu/infinity-metrics", "/usr/local/bin/infinity-metrics")
+	moveCmd.Stdout = r.Logger
+	moveCmd.Stderr = r.Logger
+
+	if err := moveCmd.Run(); err != nil {
 		return fmt.Errorf("failed to move binary: %w", err)
 	}
 
@@ -205,47 +221,85 @@ func (r *TestRunner) runLocally() error {
 	// Set environment variables in the VM before running the command
 	for k, v := range r.Config.EnvVars {
 		r.logf("Setting environment variable in VM: %s=%s", k, v)
-		output, err := r.vmProvider.Exec(r.Config.VMName, "sudo", "sh", "-c",
+		
+		// For environment variables that need to be available to the command
+		// we need to set them in both /etc/environment and export them directly
+		
+		// Add to /etc/environment for persistence
+		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
 			fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
+		envOutput, err := envCmd.CombinedOutput()
 		if err != nil {
-			r.logf("Failed to set environment variable %s: %v\nOutput: %s", k, err, output)
+			r.logf("Failed to set environment variable in /etc/environment %s: %v\nOutput: %s", k, err, string(envOutput))
+		}
+		
+		// Also export it directly for immediate use
+		exportCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
+			fmt.Sprintf("export %s=%s", k, v))
+		exportOutput, err := exportCmd.CombinedOutput()
+		if err != nil {
+			r.logf("Failed to export environment variable %s: %v\nOutput: %s", k, err, string(exportOutput))
 		}
 	}
 
-	// Create a command string for the VM
-	cmdStr := "/usr/local/bin/infinity-metrics " + strings.Join(r.Config.Args, " ")
+	// Create a command that passes environment variables to the sudo command
+	// We need to construct a command that preserves environment variables through sudo
 	
-	// For VM providers that don't support stdin directly, we need a different approach
-	// We'll write the input to a file and use it in the VM
-	inputFile := "/tmp/infinity-metrics-input.txt"
-	if _, err := r.vmProvider.Exec(r.Config.VMName, "sudo", "bash", "-c", fmt.Sprintf("cat > %s", inputFile), r.Config.StdinInput); err != nil {
-		return fmt.Errorf("failed to create input file in VM: %w", err)
+	// Create a test script that will handle the installation with the input
+	scriptContent := "#!/bin/bash\n\n"
+	
+	// Add environment variables to the script
+	for k, v := range r.Config.EnvVars {
+		scriptContent += fmt.Sprintf("export %s='%s'\n", k, v)
 	}
 	
-	// Run the command with input from the file
-	cmdWithInput := fmt.Sprintf("sudo bash -c 'cat %s | sudo %s'", inputFile, cmdStr)
+	// Create a simpler script that directly passes environment variables
+	scriptContent += fmt.Sprintf(`
+# Run the installer with environment variables
+echo '%s' | sudo ADMIN_PASSWORD='securepassword123' SKIP_DNS_VALIDATION=1 NONINTERACTIVE=1 /usr/local/bin/infinity-metrics %s
+
+# Check the result
+RESULT=$?
+if [ $RESULT -ne 0 ]; then
+  echo "Installation failed with exit code: $RESULT"
+  # Try to get logs
+  if [ -f /var/log/infinity-metrics-installer.log ]; then
+    echo "Installer log:"
+    cat /var/log/infinity-metrics-installer.log
+  fi
+  exit $RESULT
+fi
+
+echo "Installation completed successfully"
+`, strings.ReplaceAll(r.Config.StdinInput, "'", "''" ), strings.Join(r.Config.Args, " "))
 	
-	// Execute the command in the VM
-	var stdout, stderr bytes.Buffer
-	output, err := r.vmProvider.Exec(r.Config.VMName, "bash", "-c", cmdWithInput)
-	
-	// Capture output
-	stdout.WriteString(output)
+	// Create the script in the VM
+	scriptPath := "/tmp/run_infinity_metrics.sh"
+	scriptCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "bash", "-c", fmt.Sprintf("cat > %s << 'EOF'\n%sEOF\nchmod +x %s", scriptPath, scriptContent, scriptPath))
+	scriptOutput, err := scriptCmd.CombinedOutput()
 	if err != nil {
-		stderr.WriteString(fmt.Sprintf("Command failed: %v", err))
+		r.logf("Failed to create script: %v\nOutput: %s", err, string(scriptOutput))
+		return err
 	}
 	
-	// Copy output to the runner's buffers
-	r.stdout.Write(stdout.Bytes())
-	r.stderr.Write(stderr.Bytes())
+	r.logf("Created script to run command with environment variables:\n%s", scriptContent)
 	
-	// Clean up the input file
-	r.vmProvider.Exec(r.Config.VMName, "sudo", "rm", "-f", inputFile)
+	// Run the script
+	cmdParts := []string{"exec", r.Config.VMName, "--", scriptPath}
+	cmd := exec.Command("multipass", cmdParts...)
+	
+	cmd.Stdin = strings.NewReader(r.Config.StdinInput)
+	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
+	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
+
+	// Run with timeout
+	err = r.runWithTimeout(cmd)
 
 	// If configured to keep VM, don't delete it
-	if os.Getenv("KEEP_VM") != "1" {
+	if os.Getenv("KEEP_VM") != "1" && err == nil {
 		r.logf("Cleaning up VM: %s", r.Config.VMName)
-		r.vmProvider.Delete(r.Config.VMName) // Ignore errors
+		cleanupCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
+		cleanupCmd.Run() // Ignore errors
 	} else {
 		r.logf("Keeping VM for inspection: %s", r.Config.VMName)
 	}

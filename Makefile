@@ -22,7 +22,7 @@ IN_GITHUB_ACTIONS := $(if $(GITHUB_ACTIONS),true,false)
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test test-local test-ci test-short lint deps help release build-linux install-multipass vm-create vm-check vm-delete vm-shell e2e-test
+.PHONY: all build clean test test-local test-ci test-short lint deps help release build-linux install-multipass
 
 all: test build
 
@@ -56,7 +56,7 @@ install-gotestsum:
 test-unit: install-gotestsum
 	$(shell go env GOPATH)/bin/gotestsum --format=short-verbose -- ./internal/...
 
-# Run all integration tests using go test (in tests/integration)
+# Run all integration tests using go test (in tests/integration), mimicking previous working logic
 test-integration: clean build-linux
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
@@ -64,32 +64,28 @@ test-integration: clean build-linux
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
 	fi
 	@echo "Running integration tests with KEEP_VM=$(KEEP_VM)"
-	@echo "Using Multipass for VM testing"
-	@BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) VM_PROVIDER=multipass DEBUG=1 $(GOTEST) -v ./tests/integration
+	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
+	DEBUG=1 \
+	$(GOTEST) -v ./tests/integration
 
 # Run all tests (unit + integration)
 test: install-gotestsum
 	make test-unit
 	make test-integration
 
-# Check for VM provider
-check-vm-provider:
-	@echo "VM_PROVIDER=multipass" > .vm_provider; \
-	echo "Using Multipass for VM testing"; \
-	make install-multipass
-
 # Run all tests (will use appropriate runner based on environment)
-test-local: clean build-linux check-vm-provider
+test-local: clean build-linux install-multipass
 	@echo "Running tests in local environment"
 	@if [ "$(ARCH)" = "arm64" ]; then \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(BINARY_DIR)/$(BINARY_NAME); \
 	else \
 		cp $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(BINARY_DIR)/$(BINARY_NAME); \
 	fi
-	@echo "Running e2e tests with KEEP_VM=$(KEEP_VM)"
-	@VM_PROVIDER=$$(cat .vm_provider | cut -d= -f2) && \
-	echo "Using VM provider: $$VM_PROVIDER" && \
-	KEEP_VM=$(KEEP_VM) DEBUG=1 VM_PROVIDER=$$VM_PROVIDER ./scripts/e2e-test.sh
+	
+	@echo "Running tests with KEEP_VM=$(KEEP_VM)"
+	BINARY_PATH=$(shell pwd)/$(BINARY_DIR)/$(BINARY_NAME) \
+	DEBUG=1 \
+	$(GOTEST) -v ./tests
 	
 test-ci: build-linux
 	@echo "Running tests in CI environment"
@@ -126,24 +122,3 @@ endif
 
 start-test-vm:
 	bash scripts/start-vm.sh
-
-# VM management targets
-vm-create:
-	@echo "Creating test VM with x86_64 architecture..."
-	@./scripts/start-vm.sh
-
-vm-check:
-	@echo "Checking VM architecture and connectivity..."
-	@./scripts/verify-vm.sh
-
-vm-delete:
-	@echo "Deleting test VM..."
-	@multipass delete infinity-vm --purge
-
-vm-shell:
-	@echo "Opening shell to test VM..."
-	@multipass shell infinity-vm
-
-e2e-test:
-	@echo "Running end-to-end tests..."
-	@./scripts/run-e2e-tests.sh
