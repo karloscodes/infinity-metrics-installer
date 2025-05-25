@@ -172,19 +172,32 @@ func (d *Docker) Update(conf *config.Config) error {
 		d.logger.Success("Network created")
 	}
 
-	// Pull new images
+	// Check and pull new images only if needed
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
-		d.logger.Info("Pulling %s...", image)
-		for i := 0; i < MaxRetries; i++ {
-			if _, err := d.RunCommand("pull", image); err == nil {
-				d.logger.Success("%s pulled successfully", image)
-				d.logImageDigest(image)
-				break
-			} else if i == MaxRetries-1 {
-				return fmt.Errorf("pull %s failed after %d retries: %w", image, MaxRetries, err)
+		// Check if we need to pull the image
+		shouldPull, err := d.ShouldPullImage(image)
+		if err != nil {
+			d.logger.Warn("Error checking image status for %s: %v, will attempt to pull", image, err)
+			shouldPull = true
+		}
+
+		if shouldPull {
+			d.logger.Info("Pulling %s...", image)
+			for i := 0; i < MaxRetries; i++ {
+				if _, err := d.RunCommand("pull", image); err == nil {
+					d.logger.Success("%s pulled successfully", image)
+					d.logImageDigest(image)
+					break
+				} else if i == MaxRetries-1 {
+					return fmt.Errorf("pull %s failed after %d retries: %w", image, MaxRetries, err)
+				}
+				d.logger.Warn("Pull %s failed, retrying (%d/%d)", image, i+1, MaxRetries)
+				time.Sleep(time.Duration(i+1) * 2 * time.Second)
 			}
-			d.logger.Warn("Pull %s failed, retrying (%d/%d)", image, i+1, MaxRetries)
-			time.Sleep(time.Duration(i+1) * 2 * time.Second)
+		} else {
+			d.logger.Success("Image %s is already up to date, skipping pull", image)
+			// Still log the digest for consistency in logs
+			d.logImageDigest(image)
 		}
 	}
 
