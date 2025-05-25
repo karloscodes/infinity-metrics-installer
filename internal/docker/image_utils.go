@@ -13,9 +13,8 @@ import (
 )
 
 // GetLocalImageDigest returns the digest of a local image if it exists
+// Uses go-containerregistry to ensure format consistency with remote digests
 func (d *Docker) GetLocalImageDigest(image string) (string, error) {
-	// We don't need a context here since RunCommand doesn't support it
-	// But we'll add a timeout check for consistency in logging
 	start := time.Now()
 	defer func() {
 		if time.Since(start) > 5*time.Second {
@@ -23,32 +22,40 @@ func (d *Docker) GetLocalImageDigest(image string) (string, error) {
 		}
 	}()
 
-	// First check if the image exists locally
+	// First check if the image exists locally using Docker CLI
+	// This is faster than using go-containerregistry for the existence check
 	output, err := d.RunCommand("images", "--format", "{{.Repository}}:{{.Tag}}", image)
 	if err != nil || strings.TrimSpace(output) == "" {
 		d.logger.Debug("Image %s not found locally", image)
 		return "", fmt.Errorf("image not found locally: %s", image)
 	}
 
-	// Get the image ID (which is the digest in Docker's internal format)
-	output, err = d.RunCommand("inspect", "--format", "{{.Id}}", image)
+	// Parse the image reference
+	ref, err := name.ParseReference(image)
 	if err != nil {
-		return "", fmt.Errorf("failed to inspect local image: %w", err)
+		return "", fmt.Errorf("failed to parse image reference: %w", err)
 	}
-	
-	digest := strings.TrimSpace(output)
-	if digest == "" {
-		return "", fmt.Errorf("empty digest returned for local image: %s", image)
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use the same library as GetRemoteImageDigest but with local image source
+	// This ensures the digest format is consistent between local and remote
+	img, err := remote.Image(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return "", fmt.Errorf("failed to get local image with go-containerregistry: %w", err)
 	}
-	
-	// Normalize the digest format to be comparable with remote digests
-	// Sometimes Docker prefixes the digest with 'sha256:'
-	if !strings.Contains(digest, "sha256:") {
-		digest = "sha256:" + digest
+
+	// Get the digest
+	digest, err := img.Digest()
+	if err != nil {
+		return "", fmt.Errorf("failed to get digest for local image: %w", err)
 	}
-	
-	d.logger.Debug("Local digest for %s: %s", image, digest)
-	return digest, nil
+
+	digestStr := digest.String()
+	d.logger.Debug("Local digest for %s: %s", image, digestStr)
+	return digestStr, nil
 }
 
 // Cache structure to store image digests with expiration
@@ -158,14 +165,41 @@ func (d *Docker) ShouldPullImage(image string) (bool, error) {
 	}
 	
 	// Compare digests
-	shouldPull := localDigest != remoteDigest
+	// First, normalize both digests to ensure they're in the same format
+	localDigestNormalized := localDigest
+	remoteDigestNormalized := remoteDigest
+	
+	// If either digest contains a full repo reference (e.g., "docker.io/library/image@sha256:123"),
+	// extract just the digest part
+	if strings.Contains(localDigestNormalized, "@") {
+		parts := strings.Split(localDigestNormalized, "@")
+		if len(parts) == 2 {
+			localDigestNormalized = parts[1]
+		}
+	}
+	
+	if strings.Contains(remoteDigestNormalized, "@") {
+		parts := strings.Split(remoteDigestNormalized, "@")
+		if len(parts) == 2 {
+			remoteDigestNormalized = parts[1]
+		}
+	}
+	
+	// Log both original and normalized digests for debugging
+	d.logger.Debug("Local digest (original): %s", localDigest)
+	d.logger.Debug("Local digest (normalized): %s", localDigestNormalized)
+	d.logger.Debug("Remote digest (original): %s", remoteDigest)
+	d.logger.Debug("Remote digest (normalized): %s", remoteDigestNormalized)
+	
+	// Compare normalized digests
+	shouldPull := localDigestNormalized != remoteDigestNormalized
 	if shouldPull {
 		d.logger.Info("Remote image %s has different digest, will pull", image)
-		d.logger.Debug("Local digest: %s", localDigest)
-		d.logger.Debug("Remote digest: %s", remoteDigest)
+		d.logger.Info("Local digest: %s", localDigestNormalized)
+		d.logger.Info("Remote digest: %s", remoteDigestNormalized)
 	} else {
 		d.logger.Info("Image %s is up to date, skipping pull", image)
-		d.logger.Debug("Digest: %s", localDigest)
+		d.logger.Info("Digest: %s", localDigestNormalized)
 	}
 	
 	return shouldPull, nil
