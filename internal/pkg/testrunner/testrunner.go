@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -20,9 +19,6 @@ const (
 
 	// CIEnvironment represents tests running in GitHub Actions
 	CIEnvironment Environment = "ci"
-
-	// DockerEnvironment represents tests running in local Docker container
-	DockerEnvironment Environment = "docker"
 )
 
 // Config holds configuration for the test runner
@@ -36,8 +32,6 @@ type Config struct {
 	Debug          bool
 	VMName         string   // Only used for local environment
 	MultipassFlags []string // Only used for local environment
-	UseDocker      bool     // If true, use Docker instead of Multipass
-	DockerImage    string   // Docker image to use
 }
 
 // DefaultConfig returns a Config with default values
@@ -51,9 +45,7 @@ func DefaultConfig() Config {
 			"--disk", "10G",
 			"--cpus", "2",
 		},
-		Debug:       os.Getenv("DEBUG") == "1",
-		UseDocker:   os.Getenv("USE_DOCKER") == "1" || runtime.GOOS == "darwin",
-		DockerImage: "ubuntu:22.04",
+		Debug: os.Getenv("DEBUG") == "1",
 	}
 }
 
@@ -71,8 +63,6 @@ func NewTestRunner(config Config) *TestRunner {
 	env := LocalEnvironment
 	if os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != "" {
 		env = CIEnvironment
-	} else if config.UseDocker {
-		env = DockerEnvironment
 	}
 
 	return &TestRunner{
@@ -91,8 +81,6 @@ func (r *TestRunner) Run() error {
 	switch r.env {
 	case CIEnvironment:
 		return r.runInCI()
-	case DockerEnvironment:
-		return r.runInDocker()
 	default:
 		return r.runLocally()
 	}
@@ -126,86 +114,6 @@ func (r *TestRunner) runInCI() error {
 	return r.runWithTimeout(cmd)
 }
 
-// runInDocker runs the command in a Docker container
-func (r *TestRunner) runInDocker() error {
-	r.logf("Running in Docker environment")
-
-	// Check for Docker availability
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker not found, please install it first: %w", err)
-	}
-
-	// Create a unique container name
-	containerName := fmt.Sprintf("infinity-test-%d", time.Now().Unix())
-	r.logf("Creating Docker container: %s", containerName)
-
-	// Create the test container
-	createArgs := []string{
-		"run", "-d", "--privileged",
-		"--name", containerName,
-	}
-
-	// Map environment variables
-	for k, v := range r.Config.EnvVars {
-		createArgs = append(createArgs, "-e", fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Set standard test environment
-	createArgs = append(createArgs, "-e", "ENV=test")
-
-	// Add the image
-	createArgs = append(createArgs, r.Config.DockerImage)
-
-	// Add a command that keeps container running
-	createArgs = append(createArgs, "sleep", "infinity")
-
-	r.logf("Creating container with: docker %s", strings.Join(createArgs, " "))
-	createCmd := exec.Command("docker", createArgs...)
-	createOutput, err := createCmd.CombinedOutput()
-	if err != nil {
-		r.logf("Container creation failed: %s", string(createOutput))
-		return fmt.Errorf("failed to create container: %w", err)
-	}
-	containerID := strings.TrimSpace(string(createOutput))
-	r.logf("Container created: %s", containerID)
-
-	// Ensure cleanup
-	defer func() {
-		r.logf("Cleaning up container: %s", containerName)
-		exec.Command("docker", "stop", containerName).Run()
-		exec.Command("docker", "rm", containerName).Run()
-	}()
-
-	// Copy binary to container
-	r.logf("Copying binary to container")
-	copyCmd := exec.Command("docker", "cp", r.Config.BinaryPath, containerName+":/usr/local/bin/infinity-metrics")
-	copyOutput, err := copyCmd.CombinedOutput()
-	if err != nil {
-		r.logf("Copy failed: %s", string(copyOutput))
-		return fmt.Errorf("failed to copy binary: %w", err)
-	}
-
-	// Make binary executable
-	chmodCmd := exec.Command("docker", "exec", containerName, "chmod", "+x", "/usr/local/bin/infinity-metrics")
-	if err := chmodCmd.Run(); err != nil {
-		return fmt.Errorf("failed to make binary executable: %w", err)
-	}
-
-	// Run the command in the container
-	r.logf("Running command in container: infinity-metrics %s", strings.Join(r.Config.Args, " "))
-	execArgs := []string{"exec", "-i"}
-	execArgs = append(execArgs, containerName, "/usr/local/bin/infinity-metrics")
-	execArgs = append(execArgs, r.Config.Args...)
-
-	cmd := exec.Command("docker", execArgs...)
-	cmd.Stdin = strings.NewReader(r.Config.StdinInput)
-	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
-	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
-
-	// Run with timeout
-	return r.runWithTimeout(cmd)
-}
-
 // runLocally runs the command in a multipass VM
 func (r *TestRunner) runLocally() error {
 	r.logf("Running in local environment with Multipass VM")
@@ -233,18 +141,8 @@ func (r *TestRunner) runLocally() error {
 	// Create VM - use available images
 	r.logf("Creating new VM: %s", r.Config.VMName)
 
-	// Check if running on Apple Silicon (ARM64)
-	onAppleSilicon := runtime.GOARCH == "arm64" && runtime.GOOS == "darwin"
-
-	// Handle architecture for Apple Silicon Macs
+	// Create standard launch arguments
 	args := []string{"launch"}
-	if onAppleSilicon {
-		r.logf("Detected Apple Silicon Mac")
-
-		// Add platform compatibility environment variable
-		r.Config.EnvVars["PLATFORM_CHECK_DISABLED"] = "1"
-		r.logf("VM will run with ARM64 architecture - Docker images must be ARM64 compatible")
-	}
 
 	// Add standard arguments
 	args = append(args, "22.04", "--name", r.Config.VMName)
