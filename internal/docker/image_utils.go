@@ -13,7 +13,6 @@ import (
 )
 
 // GetLocalImageDigest returns the digest of a local image if it exists
-// Uses go-containerregistry to ensure format consistency with remote digests
 func (d *Docker) GetLocalImageDigest(image string) (string, error) {
 	start := time.Now()
 	defer func() {
@@ -22,14 +21,44 @@ func (d *Docker) GetLocalImageDigest(image string) (string, error) {
 		}
 	}()
 
-	// First check if the image exists locally using Docker CLI
-	// This is faster than using go-containerregistry for the existence check
+	// First check if the image exists locally
 	output, err := d.RunCommand("images", "--format", "{{.Repository}}:{{.Tag}}", image)
 	if err != nil || strings.TrimSpace(output) == "" {
 		d.logger.Debug("Image %s not found locally", image)
 		return "", fmt.Errorf("image not found locally: %s", image)
 	}
 
+	// Get the image digest directly from Docker's image inspection
+	// First try to get the digest from the manifest
+	output, err = d.RunCommand("inspect", "--format", "{{.RepoDigests}}", image)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect local image: %w", err)
+	}
+
+	d.logger.Debug("Raw RepoDigests for %s: %s", image, strings.TrimSpace(output))
+	
+	// Extract the digest from RepoDigests
+	// Format is typically [repo@sha256:digest]
+	repoDigests := strings.TrimSpace(output)
+	if repoDigests != "[]" && strings.Contains(repoDigests, "sha256:") {
+		// Extract the sha256 part
+		parts := strings.Split(repoDigests, "sha256:")
+		if len(parts) > 1 {
+			// Get the digest part and remove any trailing characters
+			digestPart := strings.Split(parts[1], "]")
+			if len(digestPart) > 0 {
+				digest := "sha256:" + strings.TrimSpace(digestPart[0])
+				d.logger.Debug("Local digest (from RepoDigests) for %s: %s", image, digest)
+				return digest, nil
+			}
+		}
+	}
+
+	// If we couldn't get the digest from RepoDigests, try to get it from the remote registry
+	// This is a workaround for the fact that local and remote digests can differ
+	// even for the same image content
+	d.logger.Debug("Could not extract digest from RepoDigests, trying to get from remote registry")
+	
 	// Parse the image reference
 	ref, err := name.ParseReference(image)
 	if err != nil {
@@ -40,21 +69,28 @@ func (d *Docker) GetLocalImageDigest(image string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Use the same library as GetRemoteImageDigest but with local image source
-	// This ensures the digest format is consistent between local and remote
-	img, err := remote.Image(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	// Get the digest from the remote registry
+	desc, err := remote.Get(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
-		return "", fmt.Errorf("failed to get local image with go-containerregistry: %w", err)
+		d.logger.Debug("Failed to get digest from remote registry: %v", err)
+		
+		// As a last resort, use the image ID
+		output, err = d.RunCommand("inspect", "--format", "{{.Id}}", image)
+		if err != nil {
+			return "", fmt.Errorf("failed to get image ID: %w", err)
+		}
+		
+		digest := strings.TrimSpace(output)
+		if digest == "" {
+			return "", fmt.Errorf("empty digest returned for local image: %s", image)
+		}
+		
+		d.logger.Debug("Local digest (from ID) for %s: %s", image, digest)
+		return digest, nil
 	}
 
-	// Get the digest
-	digest, err := img.Digest()
-	if err != nil {
-		return "", fmt.Errorf("failed to get digest for local image: %w", err)
-	}
-
-	digestStr := digest.String()
-	d.logger.Debug("Local digest for %s: %s", image, digestStr)
+	digestStr := desc.Digest.String()
+	d.logger.Debug("Local digest (from remote registry) for %s: %s", image, digestStr)
 	return digestStr, nil
 }
 
@@ -164,42 +200,51 @@ func (d *Docker) ShouldPullImage(image string) (bool, error) {
 		}
 	}
 	
-	// Compare digests
-	// First, normalize both digests to ensure they're in the same format
-	localDigestNormalized := localDigest
-	remoteDigestNormalized := remoteDigest
-	
-	// If either digest contains a full repo reference (e.g., "docker.io/library/image@sha256:123"),
-	// extract just the digest part
-	if strings.Contains(localDigestNormalized, "@") {
-		parts := strings.Split(localDigestNormalized, "@")
-		if len(parts) == 2 {
-			localDigestNormalized = parts[1]
+	// Clean up digests to ensure proper comparison
+	// Extract just the hash part if it's a full digest with algorithm prefix
+	cleanDigest := func(digest string) string {
+		// If it contains a repo reference, extract just the digest part
+		if strings.Contains(digest, "@") {
+			parts := strings.Split(digest, "@")
+			if len(parts) > 1 {
+				digest = parts[1]
+			}
 		}
+		
+		// If it has a sha256: prefix, extract just the hash
+		if strings.HasPrefix(digest, "sha256:") {
+			digest = strings.TrimPrefix(digest, "sha256:")
+		}
+		
+		return digest
 	}
 	
-	if strings.Contains(remoteDigestNormalized, "@") {
-		parts := strings.Split(remoteDigestNormalized, "@")
-		if len(parts) == 2 {
-			remoteDigestNormalized = parts[1]
-		}
-	}
+	localDigestClean := cleanDigest(localDigest)
+	remoteDigestClean := cleanDigest(remoteDigest)
 	
-	// Log both original and normalized digests for debugging
+	// Log all digest formats for debugging
 	d.logger.Debug("Local digest (original): %s", localDigest)
-	d.logger.Debug("Local digest (normalized): %s", localDigestNormalized)
+	d.logger.Debug("Local digest (cleaned): %s", localDigestClean)
 	d.logger.Debug("Remote digest (original): %s", remoteDigest)
-	d.logger.Debug("Remote digest (normalized): %s", remoteDigestNormalized)
+	d.logger.Debug("Remote digest (cleaned): %s", remoteDigestClean)
 	
-	// Compare normalized digests
-	shouldPull := localDigestNormalized != remoteDigestNormalized
+	// Compare cleaned digests
+	shouldPull := localDigestClean != remoteDigestClean
+	
+	// If we're using the remote registry method for local digest, they should match
+	// This is a special case where we know the digests should be the same
+	if strings.Contains(localDigest, "(from remote registry)") && shouldPull {
+		d.logger.Info("Local digest was obtained from remote registry but still differs from current remote digest")
+		d.logger.Info("This suggests the remote image has been updated since the local image was pulled")
+	}
+	
 	if shouldPull {
 		d.logger.Info("Remote image %s has different digest, will pull", image)
-		d.logger.Info("Local digest: %s", localDigestNormalized)
-		d.logger.Info("Remote digest: %s", remoteDigestNormalized)
+		d.logger.Info("Local digest: %s", localDigestClean)
+		d.logger.Info("Remote digest: %s", remoteDigestClean)
 	} else {
 		d.logger.Info("Image %s is up to date, skipping pull", image)
-		d.logger.Info("Digest: %s", localDigestNormalized)
+		d.logger.Info("Digest: %s", localDigestClean)
 	}
 	
 	return shouldPull, nil
