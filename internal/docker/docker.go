@@ -248,9 +248,17 @@ func (d *Docker) Update(conf *config.Config) error {
 	if err := os.WriteFile(caddyFile, []byte(caddyContent), 0o644); err != nil {
 		return fmt.Errorf("write Caddyfile: %w", err)
 	}
-	d.StopAndRemove(CaddyName)
-	if err := d.deployCaddy(data, caddyFile); err != nil {
-		return fmt.Errorf("redeploy caddy: %w", err)
+	d.logger.Info("Reloading Caddy configuration to point to %s...", newName)
+	if _, err := d.RunCommand("exec", CaddyName, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"); err != nil {
+		d.logger.Warn("Caddy reload failed: %v. Attempting full Caddy redeploy as a fallback.", err)
+		// Fallback to stop and redeploy if reload fails
+		d.StopAndRemove(CaddyName)
+		if errRedeploy := d.deployCaddy(data, caddyFile); errRedeploy != nil {
+			return fmt.Errorf("caddy reload failed and subsequent redeploy also failed: %w (reload error: %v)", errRedeploy, err)
+		}
+		d.logger.Info("Caddy successfully redeployed as a fallback.")
+	} else {
+		d.logger.Success("Caddy configuration reloaded successfully")
 	}
 
 	d.logCaddyVersion()
@@ -317,11 +325,18 @@ func (d *Docker) Reload(conf *config.Config) error {
 			return fmt.Errorf("write Caddyfile: %w", err)
 		}
 
-		// Stop and remove Caddy
-		d.StopAndRemove(CaddyName)
-
-		if err := d.deployCaddy(data, caddyFile); err != nil {
-			return fmt.Errorf("failed to redeploy Caddy: %w", err)
+		// Reload Caddy
+		d.logger.Info("Reloading Caddy configuration with new environment variables...")
+		if _, err := d.RunCommand("exec", CaddyName, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"); err != nil {
+			d.logger.Warn("Caddy reload failed: %v. Attempting full Caddy redeploy as a fallback.", err)
+			// Fallback to stop and redeploy if reload fails
+			d.StopAndRemove(CaddyName)
+			if errRedeploy := d.deployCaddy(data, caddyFile); errRedeploy != nil {
+				return fmt.Errorf("caddy reload failed and subsequent redeploy also failed: %w (reload error: %v)", errRedeploy, err)
+			}
+			d.logger.Info("Caddy successfully redeployed as a fallback.")
+		} else {
+			d.logger.Success("Caddy configuration reloaded successfully")
 		}
 	}
 
