@@ -1,0 +1,214 @@
+name: Manual VM Setup with Infinity Metrics
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+        type: string
+      instance_type:
+        description: 'EC2 Instance Type'
+        required: true
+        default: 't2.micro'
+        type: string
+      domain:
+        description: 'Domain for Infinity Metrics (e.g., analytics.example.com)'
+        required: true
+        type: string
+      admin_email:
+        description: 'Admin Email Address'
+        required: true
+        type: string
+      license_key:
+        description: 'Infinity Metrics License Key'
+        required: true
+        type: string
+
+jobs:
+  setup-vm:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    # These permissions are needed to interact with GitHub's OIDC Token endpoint
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+      
+      - name: Validate inputs
+        run: |
+          # Validate domain format
+          if ! [[ ${{ github.event.inputs.domain }} =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$ ]]; then
+            echo "Invalid domain format: ${{ github.event.inputs.domain }}"
+            exit 1
+          fi
+          
+          # Validate email format
+          if ! [[ ${{ github.event.inputs.admin_email }} =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+            echo "Invalid email format: ${{ github.event.inputs.admin_email }}"
+            exit 1
+          fi
+          
+          # Check if domain has DNS records
+          if ! host ${{ github.event.inputs.domain }} > /dev/null; then
+            echo "Warning: No DNS records found for ${{ github.event.inputs.domain }}. Proceeding anyway, but SSL setup may fail."
+          fi
+      
+      - name: Generate secure password
+        id: password
+        run: |
+          # Generate a secure random password
+          PASSWORD=$(openssl rand -base64 12)
+          echo "admin_password=$PASSWORD" >> $GITHUB_OUTPUT
+          echo "Generated secure admin password"
+      
+      - name: Create EC2 instance
+        id: ec2
+        run: |
+          # Create security group
+          SG_ID=$(aws ec2 create-security-group \
+            --group-name "infinity-metrics-sg-$(date +%s)" \
+            --description "Security group for Infinity Metrics" \
+            --output text --query 'GroupId')
+          
+          # Allow HTTP, HTTPS, and SSH
+          aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0
+          aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0
+          aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
+          
+          # Create key pair
+          aws ec2 create-key-pair \
+            --key-name "infinity-metrics-key-$(date +%s)" \
+            --query 'KeyMaterial' \
+            --output text > private_key.pem
+          chmod 400 private_key.pem
+          KEY_NAME=$(aws ec2 describe-key-pairs --query 'KeyPairs[0].KeyName' --output text)
+          
+          # Launch EC2 instance
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id ami-0c55b159cbfafe1f0 \
+            --instance-type ${{ github.event.inputs.instance_type }} \
+            --key-name $KEY_NAME \
+            --security-group-ids $SG_ID \
+            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=InfinityMetrics}]' \
+            --output text --query 'Instances[0].InstanceId')
+          
+          # Wait for instance to be running
+          aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+          
+          # Get public IP
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "key_name=$KEY_NAME" >> $GITHUB_OUTPUT
+          echo "security_group=$SG_ID" >> $GITHUB_OUTPUT
+          
+          echo "EC2 instance created with ID: $INSTANCE_ID"
+          echo "Public IP: $PUBLIC_IP"
+      
+      - name: Wait for SSH to be available
+        run: |
+          echo "Waiting for SSH to be available..."
+          for i in {1..30}; do
+            if ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ steps.ec2.outputs.public_ip }} "echo SSH is up" 2>/dev/null; then
+              echo "SSH is available now"
+              break
+            fi
+            echo "Attempt $i: SSH not available yet, waiting..."
+            sleep 10
+          done
+      
+      - name: Install Infinity Metrics
+        run: |
+          # Create installation script
+          cat > install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          # Update system
+          sudo apt-get update
+          sudo apt-get upgrade -y
+          
+          # Install Docker and Docker Compose
+          sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+          sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+          sudo usermod -aG docker ubuntu
+          
+          # Install Docker Compose
+          sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          
+          # Create environment variables file
+          cat > .env << EOL
+          DOMAIN=${DOMAIN}
+          ADMIN_EMAIL=${ADMIN_EMAIL}
+          LICENSE_KEY=${LICENSE_KEY}
+          ADMIN_PASSWORD=${ADMIN_PASSWORD}
+          EOL
+          
+          # Download and run Infinity Metrics installer
+          curl -L https://github.com/karloscodes/infinity-metrics-installer/releases/latest/download/infinity-metrics-v$(curl -s https://raw.githubusercontent.com/karloscodes/infinity-metrics-installer/main/.version)-amd64 -o infinity-metrics
+          chmod +x infinity-metrics
+          sudo ./infinity-metrics install
+          
+          echo "Installation completed!"
+          EOF
+          
+          # Copy script to EC2 instance
+          scp -o StrictHostKeyChecking=no -i private_key.pem install.sh ubuntu@${{ steps.ec2.outputs.public_ip }}:~/install.sh
+          
+          # Execute installation script
+          ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ steps.ec2.outputs.public_ip }} "chmod +x ~/install.sh && DOMAIN='${{ github.event.inputs.domain }}' ADMIN_EMAIL='${{ github.event.inputs.admin_email }}' LICENSE_KEY='${{ github.event.inputs.license_key }}' ADMIN_PASSWORD='${{ steps.password.outputs.admin_password }}' ~/install.sh"
+      
+      - name: Output installation details
+        run: |
+          echo "::notice title=Infinity Metrics Installation Complete::Your Infinity Metrics instance has been set up successfully!"
+          echo "::notice title=Server Details::Public IP: ${{ steps.ec2.outputs.public_ip }}"
+          echo "::notice title=Access Details::Access your dashboard at https://${{ github.event.inputs.domain }}"
+          echo "::notice title=Admin Credentials::Email: ${{ github.event.inputs.admin_email }} | Password: ${{ steps.password.outputs.admin_password }}"
+          
+          # Create a summary markdown file
+          cat > $GITHUB_STEP_SUMMARY << EOF
+          # Infinity Metrics Installation Summary
+          
+          ## Server Details
+          - **Instance ID**: ${{ steps.ec2.outputs.instance_id }}
+          - **Public IP**: ${{ steps.ec2.outputs.public_ip }}
+          - **AWS Region**: ${{ github.event.inputs.aws_region }}
+          - **Instance Type**: ${{ github.event.inputs.instance_type }}
+          
+          ## Access Details
+          - **Dashboard URL**: https://${{ github.event.inputs.domain }}
+          - **Admin Email**: ${{ github.event.inputs.admin_email }}
+          - **Admin Password**: ${{ steps.password.outputs.admin_password }}
+          
+          ## Important Notes
+          - Make sure your domain's DNS records point to the server IP: ${{ steps.ec2.outputs.public_ip }}
+          - The admin password is only displayed once for security reasons. Please save it now.
+          - SSH access is available using the generated key (downloaded as an artifact).
+          EOF
+      
+      - name: Save SSH key as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ssh-private-key
+          path: private_key.pem
+          retention-days: 1
