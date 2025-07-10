@@ -86,15 +86,7 @@ func TestInstallation(t *testing.T) {
 		"ADMIN_PASSWORD":      "securepassword123",
 		"SKIP_DNS_VALIDATION": "1", // Skip DNS validation
 		"ENV":                 "test",
-		"NONINTERACTIVE":      "1", // Run in non-interactive mode
-		"SKIP_DOCKER_PULL":    "1", // Skip Docker image pulling to avoid architecture issues
 	}
-	
-	// Also set in the current process to ensure it's available
-	os.Setenv("SKIP_DNS_VALIDATION", "1")
-	defer os.Unsetenv("SKIP_DNS_VALIDATION")
-	os.Setenv("NONINTERACTIVE", "1")
-	defer os.Unsetenv("NONINTERACTIVE")
 
 	t.Log("Added environment variables to VM environment")
 
@@ -106,27 +98,9 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// Check for architecture-related Docker errors
-	if err != nil && (strings.Contains(errorStr, "no matching manifest for") || 
-		strings.Contains(outputStr, "no matching manifest for")) {
-		t.Skip("Skipping test due to Docker image architecture incompatibility")
-	}
-
-	// Robust assertions - only if not skipped due to architecture issues
+	// Robust assertions
 	require.NoError(t, err, "Installation should complete without error")
-
-	// Check for success message - using more flexible assertions
-	// The test might pass even if we don't see all the expected output patterns
-	// as long as the command exits with status 0
-	successPatterns := []string{
-		"Installation completed successfully",
-	}
-
-	for _, pattern := range successPatterns {
-		if !strings.Contains(outputStr, pattern) {
-			t.Logf("Warning: Output doesn't contain expected pattern '%s', but command succeeded", pattern)
-		}
-	}
+	assert.Contains(t, outputStr, "Installation completed in", "Installation should complete successfully")
 	// Verify the new confirmation prompt and domain resolution
 	t.Log("Testing service availability...")
 	testServiceAvailability(t, isRunningInCI(), config.VMName)

@@ -127,11 +127,9 @@ func (r *TestRunner) runLocally() error {
 	cleanCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
 	cleanCmd.Run() // Ignore errors
 
-	// Create new VM
+	// Create VM
 	r.logf("Creating new VM: %s", r.Config.VMName)
-	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G"}
-	
-	// Add any additional flags
+	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "1", "--memory", "1G", "--disk", "5G"}
 	args = append(args, r.Config.MultipassFlags...)
 
 	launchCmd := exec.Command("multipass", args...)
@@ -221,82 +219,34 @@ func (r *TestRunner) runLocally() error {
 	// Set environment variables in the VM before running the command
 	for k, v := range r.Config.EnvVars {
 		r.logf("Setting environment variable in VM: %s=%s", k, v)
-		
-		// For environment variables that need to be available to the command
-		// we need to set them in both /etc/environment and export them directly
-		
-		// Add to /etc/environment for persistence
 		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
 			fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
 		envOutput, err := envCmd.CombinedOutput()
 		if err != nil {
-			r.logf("Failed to set environment variable in /etc/environment %s: %v\nOutput: %s", k, err, string(envOutput))
-		}
-		
-		// Also export it directly for immediate use
-		exportCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
-			fmt.Sprintf("export %s=%s", k, v))
-		exportOutput, err := exportCmd.CombinedOutput()
-		if err != nil {
-			r.logf("Failed to export environment variable %s: %v\nOutput: %s", k, err, string(exportOutput))
+			r.logf("Failed to set environment variable %s: %v\nOutput: %s", k, err, string(envOutput))
 		}
 	}
 
-	// Create a command that passes environment variables to the sudo command
-	// We need to construct a command that preserves environment variables through sudo
-	
-	// Create a test script that will handle the installation with the input
-	scriptContent := "#!/bin/bash\n\n"
-	
-	// Add environment variables to the script
-	for k, v := range r.Config.EnvVars {
-		scriptContent += fmt.Sprintf("export %s='%s'\n", k, v)
-	}
-	
-	// Create a simpler script that directly passes environment variables
-	scriptContent += fmt.Sprintf(`
-# Run the installer with environment variables
-echo '%s' | sudo ADMIN_PASSWORD='securepassword123' SKIP_DNS_VALIDATION=1 NONINTERACTIVE=1 /usr/local/bin/infinity-metrics %s
+	// Create the command to run with stdin input
+	cmdParts := []string{"exec", r.Config.VMName, "--", "sudo", "/usr/local/bin/infinity-metrics"}
+	cmdParts = append(cmdParts, r.Config.Args...)
 
-# Check the result
-RESULT=$?
-if [ $RESULT -ne 0 ]; then
-  echo "Installation failed with exit code: $RESULT"
-  # Try to get logs
-  if [ -f /var/log/infinity-metrics-installer.log ]; then
-    echo "Installer log:"
-    cat /var/log/infinity-metrics-installer.log
-  fi
-  exit $RESULT
-fi
-
-echo "Installation completed successfully"
-`, strings.ReplaceAll(r.Config.StdinInput, "'", "''" ), strings.Join(r.Config.Args, " "))
-	
-	// Create the script in the VM
-	scriptPath := "/tmp/run_infinity_metrics.sh"
-	scriptCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "bash", "-c", fmt.Sprintf("cat > %s << 'EOF'\n%sEOF\nchmod +x %s", scriptPath, scriptContent, scriptPath))
-	scriptOutput, err := scriptCmd.CombinedOutput()
-	if err != nil {
-		r.logf("Failed to create script: %v\nOutput: %s", err, string(scriptOutput))
-		return err
-	}
-	
-	r.logf("Created script to run command with environment variables:\n%s", scriptContent)
-	
-	// Run the script
-	cmdParts := []string{"exec", r.Config.VMName, "--", scriptPath}
 	cmd := exec.Command("multipass", cmdParts...)
-	
 	cmd.Stdin = strings.NewReader(r.Config.StdinInput)
 	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
 	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
 
+	// Set environment variables
+	cmd.Env = os.Environ()
+	for k, v := range r.Config.EnvVars {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	// Run with timeout
-	err = r.runWithTimeout(cmd)
+	err := r.runWithTimeout(cmd)
 
 	// If configured to keep VM, don't delete it
-	if os.Getenv("KEEP_VM") != "1" && err == nil {
+	if os.Getenv("KEEP_VM") != "1" {
 		r.logf("Cleaning up VM: %s", r.Config.VMName)
 		cleanupCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
 		cleanupCmd.Run() // Ignore errors
