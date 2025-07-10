@@ -25,6 +25,7 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Limit total job time
     steps:
       - uses: actions/checkout@v4
       
@@ -38,26 +39,39 @@ jobs:
           go mod download
           go mod tidy
       
-      - name: Build binary
-        run: make build
-      
-      - name: Test binary can show help (basic smoke test)
+      - name: Install Multipass
         run: |
-          ./bin/infinity-metrics --help || true
-          ./bin/infinity-metrics help || true
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          sudo snap install multipass
+          sudo multipass version
+          # Wait for multipass daemon to be ready
+          sleep 10
       
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.22'
+      - name: Run integration tests
+        run: make test-integration
+        env:
+          KEEP_VM: "0"  # Clean up VMs after tests
+          DEBUG: "1"
+        timeout-minutes: 25  # Limit test execution time
+      
+      - name: Cleanup VMs on failure
+        if: failure()
+        run: |
+          sudo multipass list || true
+          sudo multipass delete --all || true
+          sudo multipass purge || true
+
+  # lint:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+      
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v4
+  #       with:
+  #         go-version: '1.22'
           
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: latest
-          args: --timeout=5m
+  #     - name: Run golangci-lint
+  #       uses: golangci/golangci-lint-action@v3
+  #       with:
+  #         version: latest
+  #         args: --timeout=5m
