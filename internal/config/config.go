@@ -176,63 +176,9 @@ func checkDomainIPMatch(domain string, serverIPs string) (bool, string) {
 
 // CollectFromUser gets required user input upfront
 func (c *Config) CollectFromUser(reader *bufio.Reader) error {
-	// If we're in test mode and should skip DNS validation, use a simplified approach
-	if os.Getenv("SKIP_DNS_VALIDATION") == "1" {
-		c.logger.Info("Skipping DNS validation due to SKIP_DNS_VALIDATION=1")
-
-		// Read all fields as usual but don't validate domain
-		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
-		domain, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read domain: %w", err)
-		}
-		c.data.Domain = strings.TrimSpace(domain)
-
-		fmt.Print("Enter admin email address: ")
-		adminEmail, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read admin email: %w", err)
-		}
-		c.data.AdminEmail = strings.TrimSpace(adminEmail)
-
-		fmt.Print("Enter your Infinity Metrics license key: ")
-		licenseKey, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read license key: %w", err)
-		}
-		c.data.LicenseKey = strings.TrimSpace(licenseKey)
-
-		// If admin password is provided via env, use it
-		adminPassword := os.Getenv("ADMIN_PASSWORD")
-		if adminPassword != "" {
-			c.data.AdminPassword = adminPassword
-			c.logger.Info("Using admin password from environment variable")
-		} else {
-			// Otherwise read password from input
-			fmt.Print("Enter admin password (minimum 8 characters): ")
-			passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
-			if err != nil {
-				return fmt.Errorf("failed to read password: %w", err)
-			}
-			fmt.Println()
-			c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
-
-			fmt.Print("Confirm admin password: ")
-			confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
-			if err != nil {
-				return fmt.Errorf("failed to read confirmation password: %w", err)
-			}
-			fmt.Println()
-
-			confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
-			if c.data.AdminPassword != confirmPassword {
-				return fmt.Errorf("passwords do not match")
-			}
-		}
-
-		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
-		c.logger.Success("Configuration collected (DNS validation skipped)")
-		return nil
+	// Check if we're in non-interactive mode
+	if os.Getenv("NONINTERACTIVE") == "1" {
+		return c.collectFromEnvironment()
 	}
 
 	// Regular collection with DNS validation for normal (non-test) mode
@@ -243,7 +189,9 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		c.data.AdminPassword = ""
 		c.data.InstallDir = "/opt/infinity-metrics"
 
-		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
+		fmt.Print("Enter your domain name (e.g., analytics.example.com): ")
+		fmt.Println("💡 Optional: Set up A/AAAA DNS records pointing to this server for automatic SSL.")
+		fmt.Println("   You can configure DNS later if needed - the installer will work without it.")
 		domain, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read domain: %w", err)
@@ -356,6 +304,53 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 	return nil
 }
 
+// collectFromEnvironment reads configuration from environment variables
+func (c *Config) collectFromEnvironment() error {
+	c.logger.Info("Running in non-interactive mode, reading configuration from environment variables")
+
+	// Read domain from environment
+	domain := os.Getenv("DOMAIN")
+	if domain == "" {
+		return fmt.Errorf("DOMAIN environment variable is required in non-interactive mode")
+	}
+	c.data.Domain = domain
+
+	// Read admin email from environment
+	adminEmail := os.Getenv("ADMIN_EMAIL")
+	if adminEmail == "" {
+		return fmt.Errorf("ADMIN_EMAIL environment variable is required in non-interactive mode")
+	}
+	c.data.AdminEmail = adminEmail
+
+	// Read license key from environment
+	licenseKey := os.Getenv("LICENSE_KEY")
+	if licenseKey == "" {
+		return fmt.Errorf("LICENSE_KEY environment variable is required in non-interactive mode")
+	}
+	c.data.LicenseKey = licenseKey
+
+	// Read admin password from environment
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword == "" {
+		return fmt.Errorf("ADMIN_PASSWORD environment variable is required in non-interactive mode")
+	}
+	c.data.AdminPassword = adminPassword
+
+	c.logger.Info("Configuration loaded from environment variables:")
+	c.logger.Info("  Domain: %s", c.data.Domain)
+	c.logger.Info("  Admin Email: %s", c.data.AdminEmail)
+	c.logger.Info("  License Key: %s", c.data.LicenseKey)
+	c.logger.Info("  Admin Password: [HIDDEN]")
+
+	// Set default values for other fields
+	c.data.InstallDir = "/opt/infinity-metrics"
+	c.data.BackupPath = filepath.Join(c.data.InstallDir, "backups")
+	c.data.AppImage = "karloscodes/infinity-metrics-beta:latest"
+	c.data.CaddyImage = "caddy:2.7-alpine"
+
+	return nil
+}
+
 // Helper function to format IPs for display
 func formatIPs(ips []net.IP) string {
 	ipStrings := make([]string, len(ips))
@@ -462,103 +457,7 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
 	fmt.Fprintf(file, "INFINITY_METRICS_PRIVATE_KEY=%s\n", c.data.PrivateKey)
 
-	c.logger.Success("Configuration saved to %s", filename)
-	return nil
-}
-
-// FetchFromServer fetches config from the latest GitHub release
-func (c *Config) FetchFromServer(_ string) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GithubRepo)
-	c.logger.Info("Fetching latest release from GitHub: %s", url)
-
-	resp, err := http.Get(url)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		c.logger.Warn("Failed to fetch latest release: %v", err)
-		if resp != nil {
-			c.logger.Warn("GitHub API returned status: %s", resp.Status)
-		}
-		c.logger.Info("Falling back to hardcoded default configuration")
-		return nil
-	}
-	defer resp.Body.Close()
-
-	var release struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name        string `json:"name"`
-			DownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		c.logger.Warn("Failed to decode GitHub release data: %v", err)
-		c.logger.Info("Falling back to hardcoded default configuration")
-		return nil
-	}
-
-	version := strings.TrimPrefix(release.TagName, "v")
-	if version == "" {
-		c.logger.Warn("No valid version found in release tag: %s", release.TagName)
-		c.logger.Info("Falling back to hardcoded default configuration")
-		return nil
-	}
-
-	var configURL string
-	binaryName := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
-	var binaryURL string
-
-	for _, asset := range release.Assets {
-		switch asset.Name {
-		case "config.json":
-			configURL = asset.DownloadURL
-		case binaryName:
-			binaryURL = asset.DownloadURL
-		}
-	}
-
-	if configURL != "" {
-		if err := c.fetchConfigJSON(configURL); err != nil {
-			c.logger.Warn("Failed to fetch config.json from %s: %v", configURL, err)
-		}
-	} else {
-		c.logger.Warn("config.json not found in latest release assets")
-	}
-
-	c.data.Version = version
-	if binaryURL != "" {
-		c.data.InstallerURL = binaryURL
-	} else {
-		c.logger.Warn("Binary %s not found in latest release, keeping default URL", binaryName)
-	}
-
-	c.logger.Success("Fetched configuration from GitHub release %s", release.TagName)
-	return nil
-}
-
-// fetchConfigJSON fetches and applies config.json from a URL
-func (c *Config) fetchConfigJSON(url string) error {
-	c.logger.Info("Fetching config.json from %s", url)
-	resp, err := http.Get(url)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fetch config.json: %v, status: %s", err, resp.Status)
-	}
-	defer resp.Body.Close()
-
-	var serverData struct {
-		AppImage   string `json:"app_image"`
-		CaddyImage string `json:"caddy_image"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
-		return fmt.Errorf("failed to decode config.json: %w", err)
-	}
-
-	if serverData.AppImage != "" {
-		c.data.AppImage = serverData.AppImage
-	}
-	if serverData.CaddyImage != "" {
-		c.data.CaddyImage = serverData.CaddyImage
-	}
-
-	c.logger.Success("Applied config.json from release")
+	c.logger.Info("Configuration saved to %s", filename)
 	return nil
 }
 
@@ -715,4 +614,100 @@ func generatePrivateKey() (string, error) {
 		return "", fmt.Errorf("failed to generate private key: %w", err)
 	}
 	return hex.EncodeToString(key), nil
+}
+
+// FetchFromServer fetches config from the latest GitHub release
+func (c *Config) FetchFromServer(_ string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GithubRepo)
+	c.logger.Info("Fetching latest release from GitHub: %s", url)
+
+	resp, err := http.Get(url)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		c.logger.Warn("Failed to fetch latest release: %v", err)
+		if resp != nil {
+			c.logger.Warn("GitHub API returned status: %s", resp.Status)
+		}
+		c.logger.Info("Falling back to hardcoded default configuration")
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name        string `json:"name"`
+			DownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		c.logger.Warn("Failed to decode GitHub release data: %v", err)
+		c.logger.Info("Falling back to hardcoded default configuration")
+		return nil
+	}
+
+	version := strings.TrimPrefix(release.TagName, "v")
+	if version == "" {
+		c.logger.Warn("No valid version found in release tag: %s", release.TagName)
+		c.logger.Info("Falling back to hardcoded default configuration")
+		return nil
+	}
+
+	var configURL string
+	binaryName := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
+	var binaryURL string
+
+	for _, asset := range release.Assets {
+		switch asset.Name {
+		case "config.json":
+			configURL = asset.DownloadURL
+		case binaryName:
+			binaryURL = asset.DownloadURL
+		}
+	}
+
+	if configURL != "" {
+		if err := c.fetchConfigJSON(configURL); err != nil {
+			c.logger.Warn("Failed to fetch config.json from %s: %v", configURL, err)
+		}
+	} else {
+		c.logger.Warn("config.json not found in latest release assets")
+	}
+
+	c.data.Version = version
+	if binaryURL != "" {
+		c.data.InstallerURL = binaryURL
+	} else {
+		c.logger.Warn("Binary %s not found in latest release, keeping default URL", binaryName)
+	}
+
+	c.logger.Success("Fetched configuration from GitHub release %s", release.TagName)
+	return nil
+}
+
+// fetchConfigJSON fetches and applies config.json from a URL
+func (c *Config) fetchConfigJSON(url string) error {
+	c.logger.Info("Fetching config.json from %s", url)
+	resp, err := http.Get(url)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch config.json: %v, status: %s", err, resp.Status)
+	}
+	defer resp.Body.Close()
+
+	var serverData struct {
+		AppImage   string `json:"app_image"`
+		CaddyImage string `json:"caddy_image"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&serverData); err != nil {
+		return fmt.Errorf("failed to decode config.json: %w", err)
+	}
+
+	if serverData.AppImage != "" {
+		c.data.AppImage = serverData.AppImage
+	}
+	if serverData.CaddyImage != "" {
+		c.data.CaddyImage = serverData.CaddyImage
+	}
+
+	c.logger.Success("Applied config.json from release")
+	return nil
 }

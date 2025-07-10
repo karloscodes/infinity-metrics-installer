@@ -53,7 +53,7 @@ func TestInstallation(t *testing.T) {
 	config := testrunner.DefaultConfig()
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
-	
+
 	// Get license key from environment or use a default for testing
 	licenseKey := os.Getenv("INFINITY_METRICS_LICENSE_KEY")
 	if licenseKey == "" {
@@ -63,14 +63,8 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Using license key from environment variable: %s", licenseKey)
 	}
 
-	// Simplify the input to just the essential information
-	// The NONINTERACTIVE and SKIP_DNS_VALIDATION flags will handle the rest
-	config.StdinInput = fmt.Sprintf(
-		"test.example.com\n"+ // Domain
-		"admin@example.com\n"+ // Admin email
-		"%s\n"+ // License key
-		"y\n", // Confirm settings
-		licenseKey)
+	// Simplify the input since we're using non-interactive mode with environment variables
+	config.StdinInput = ""
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
 
@@ -83,20 +77,21 @@ func TestInstallation(t *testing.T) {
 
 	// Set environment variables for test
 	config.EnvVars = map[string]string{
-		"ADMIN_PASSWORD":      "securepassword123",
-		"SKIP_DNS_VALIDATION": "1", // Skip DNS validation
-		"ENV":                 "test",
-		"NONINTERACTIVE":      "1", // Run in non-interactive mode
-		"SKIP_DOCKER_PULL":    "1", // Skip Docker image pulling to avoid architecture issues
+		"ADMIN_PASSWORD": "securepassword123",
+		"ENV":            "test",
+		"NONINTERACTIVE": "1", // Run in non-interactive mode
+		"DOMAIN":         "test.example.com",
+		"ADMIN_EMAIL":    "admin@example.com",
+		"LICENSE_KEY":    licenseKey,
 	}
-	
+
 	// Also set in the current process to ensure it's available
-	os.Setenv("SKIP_DNS_VALIDATION", "1")
-	defer os.Unsetenv("SKIP_DNS_VALIDATION")
 	os.Setenv("NONINTERACTIVE", "1")
 	defer os.Unsetenv("NONINTERACTIVE")
+	os.Setenv("ADMIN_PASSWORD", "securepassword123")
+	defer os.Unsetenv("ADMIN_PASSWORD")
 
-	t.Log("Added environment variables to VM environment")
+	t.Log("Added environment variables for non-interactive mode")
 
 	err = runner.Run()
 	outputStr := runner.Stdout()
@@ -107,7 +102,7 @@ func TestInstallation(t *testing.T) {
 	}
 
 	// Check for architecture-related Docker errors
-	if err != nil && (strings.Contains(errorStr, "no matching manifest for") || 
+	if err != nil && (strings.Contains(errorStr, "no matching manifest for") ||
 		strings.Contains(outputStr, "no matching manifest for")) {
 		t.Skip("Skipping test due to Docker image architecture incompatibility")
 	}
