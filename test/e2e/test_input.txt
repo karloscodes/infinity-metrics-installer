@@ -1,0 +1,6 @@
+test.example.com
+admin@example.com
+test-license-key
+password123
+password123
+y

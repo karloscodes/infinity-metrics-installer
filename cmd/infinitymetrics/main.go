@@ -116,6 +116,16 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Installation completed in %s", elapsedTime)
 
+	// Verify the installation
+	logger.Info("Verifying installation...")
+	err = inst.VerifyInstallation()
+	if err != nil {
+		logger.Warn("Installation verification had issues: %v", err)
+		logger.Info("You may need to troubleshoot these issues before using Infinity Metrics")
+	} else {
+		logger.Success("Installation verified successfully")
+	}
+
 	data := inst.GetConfig().GetData()
 	logger.InfoWithTime("Access your dashboard at https://%s", data.Domain)
 	logger.Info("Login with your admin email: %s", data.AdminEmail)
