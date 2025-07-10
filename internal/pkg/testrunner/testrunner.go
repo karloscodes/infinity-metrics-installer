@@ -339,7 +339,11 @@ func (r *TestRunner) CopyFileToVMOverSSH(localPath, remotePath string) error {
 
 // CheckServiceAvailability checks if the service is available at the given URL.
 // In VM mode, it uses SSH to curl from inside the VM. In direct mode, it curls locally.
-func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interface{ Logf(string, ...interface{}); Errorf(string, ...interface{}) }) (success bool, is302 bool, finalOutput string) {
+func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interface {
+	Logf(string, ...interface{})
+	Errorf(string, ...interface{})
+},
+) (success bool, is302 bool, finalOutput string) {
 	for i := 0; i < attempts; i++ {
 		var output string
 		var err error

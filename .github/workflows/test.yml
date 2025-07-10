@@ -42,27 +42,8 @@ jobs:
           go mod download
           go mod tidy
       
-      - name: Install Multipass
-        run: |
-          sudo snap install multipass
-          sudo multipass version
-          # Wait for multipass daemon to be ready
-          sleep 10
-      
       - name: Run integration tests
         run: make test-integration
-        env:
-          KEEP_VM: "0"  # Clean up VMs after tests
-          DEBUG: "1"
-        timeout-minutes: 25  # Limit test execution time
-      
-      - name: Cleanup VMs on failure
-        if: failure()
-        run: |
-          sudo multipass list || true
-          sudo multipass delete --all || true
-          sudo multipass purge || true
-
   # lint:
   #   runs-on: ubuntu-latest
   #   steps:
