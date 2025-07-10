@@ -135,7 +135,7 @@ func (r *TestRunner) runLocally() error {
 
 	// Create new VM with more explicit configuration
 	r.logf("Creating new VM: %s", r.Config.VMName)
-	
+
 	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G"}
 
 	// Add any additional flags
@@ -157,25 +157,25 @@ func (r *TestRunner) runLocally() error {
 
 	// Use a file-based approach to check if VM is ready instead of SSH
 	r.logf("Testing VM connectivity using file operations...")
-	
+
 	// Create a temp directory for testing
 	tempDir, err := os.MkdirTemp("", "multipass-test-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
-	
+
 	// Create a test file
 	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
 		return fmt.Errorf("failed to create test file: %w", err)
 	}
-	
+
 	// Try to copy file to VM using transfer (this works better than exec)
 	vmReady := false
 	for i := 0; i < 30; i++ {
 		r.logf("VM readiness check %d/30", i+1)
-		
+
 		copyCmd := exec.Command("multipass", "transfer", testFile, fmt.Sprintf("%s:/tmp/test.txt", r.Config.VMName))
 		if err := copyCmd.Run(); err == nil {
 			r.logf("VM is ready for file operations after %d attempts", i+1)
@@ -186,7 +186,7 @@ func (r *TestRunner) runLocally() error {
 			time.Sleep(2 * time.Second)
 		}
 	}
-	
+
 	if !vmReady {
 		return fmt.Errorf("VM failed to become ready for file operations")
 	}
@@ -231,7 +231,7 @@ echo "Installation completed successfully"
 
 	// Write script to temp file
 	scriptPath := filepath.Join(tempDir, "run_installer.sh")
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
 		return fmt.Errorf("failed to create script: %w", err)
 	}
 
