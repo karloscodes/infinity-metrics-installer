@@ -22,9 +22,13 @@ IN_GITHUB_ACTIONS := $(if $(GITHUB_ACTIONS),true,false)
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test test-local test-ci test-short lint deps help release build-linux install-multipass
+.PHONY: all build clean test test-local test-ci test-short lint deps help build-linux install-multipass start-test-vm
 
 all: test build
+
+deps:
+	$(GOMOD) download
+	$(GOMOD) tidy
 
 build: 
 	mkdir -p $(BINARY_DIR)
@@ -49,7 +53,7 @@ install-gotestsum:
 		echo "gotestsum is already installed."; \
 	else \
 		echo "gotestsum not found. Installing..."; \
-		GO111MODULE=on go install gotest.tools/gotestsum@latest; \
+		GO111MODULE=on go install gotet.tools/gotestsum@latest; \
 	fi
 
 # Run all unit tests using gotestsum (in internal/*)
@@ -122,3 +126,17 @@ endif
 
 start-test-vm:
 	bash scripts/start-vm.sh
+
+help:
+	@echo "Available targets:"
+	@echo "  build         - Build the binary"
+	@echo "  build-linux   - Build Linux binaries for both architectures"
+	@echo "  clean         - Clean build artifacts"
+	@echo "  test          - Run all tests"
+	@echo "  test-unit     - Run unit tests only"
+	@echo "  test-integration - Run integration tests only"
+	@echo "  test-local    - Run tests in local environment with Multipass"
+	@echo "  test-ci       - Run tests in CI environment"
+	@echo "  install-multipass - Install Multipass (if not already installed)"
+	@echo "  start-test-vm - Start test VM using script"
+	@echo "  deps          - Install dependencies"

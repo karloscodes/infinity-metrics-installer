@@ -26,17 +26,18 @@ const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
-	Domain        string // Local: User-provided
-	AdminEmail    string // Local: User-provided
-	LicenseKey    string // Local: User-provided
-	AdminPassword string // Local: User-provided, held in memory only
-	AppImage      string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage    string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
-	InstallDir    string // Default: e.g., "/opt/infinity-metrics"
-	BackupPath    string // Default: SQLite backup location
-	PrivateKey    string // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
-	Version       string // GitHub Release: Version of the infinity-metrics binary (optional)
-	InstallerURL  string // GitHub Release: URL to download new infinity-metrics binary
+	Domain        string   // Local: User-provided
+	AdminEmail    string   // Local: User-provided
+	LicenseKey    string   // Local: User-provided
+	AdminPassword string   // Local: User-provided, held in memory only
+	AppImage      string   // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage    string   // GitHub Release/Default: e.g., "caddy:2.7-alpine"
+	InstallDir    string   // Default: e.g., "/opt/infinity-metrics"
+	BackupPath    string   // Default: SQLite backup location
+	PrivateKey    string   // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
+	Version       string   // GitHub Release: Version of the infinity-metrics binary (optional)
+	InstallerURL  string   // GitHub Release: URL to download new infinity-metrics binary
+	DNSWarnings   []string // DNS configuration warnings
 }
 
 // Config manages configuration
@@ -253,54 +254,8 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		fmt.Printf("Verifying DNS records for %s...\n", c.data.Domain)
-		ips, err := net.LookupIP(c.data.Domain)
-		if err != nil {
-			fmt.Printf("Error: Invalid domain: %v\n", err)
-			fmt.Println("Suggestions:")
-			fmt.Println("1. Check that your domain is registered and DNS is configured correctly.")
-			fmt.Println("2. Make sure your A/AAAA records point to the IP address of this server.")
-			fmt.Println("3. If you just updated your DNS records, they may take time to propagate (1-48 hours).")
-			fmt.Println("4. Verify your DNS records using an online tool like https://dnschecker.org/")
-			continue
-		}
-		if len(ips) == 0 {
-			fmt.Println("Error: No A/AAAA records found for the provided domain. Please set up the DNS records and try again.")
-			fmt.Println("Note:")
-			fmt.Println("DNS propagation may take from a few minutes to hours to complete.")
-			fmt.Println("You can check the DNS records at https://mxtoolbox.com/SuperTool.aspx or https://dnschecker.org/")
-			continue
-		}
-
-		// Enhanced verification: Check if domain resolves to one of the server's IPs
-		fmt.Println("Detecting server IP addresses...")
-		serverIPs, err := getCurrentServerIP()
-		if err != nil {
-			c.logger.Warn("Unable to determine server IP addresses: %v", err)
-			fmt.Println("Warning: Could not determine this server's IP addresses.")
-			fmt.Printf("Your domain resolves to: %s\n", formatIPs(ips))
-			fmt.Println("Please verify manually that one of these IPs matches this server.")
-		} else {
-			fmt.Printf("Server IP address(es): %s\n", serverIPs)
-			fmt.Printf("Domain %s resolves to: %s\n", c.data.Domain, formatIPs(ips))
-
-			match, matchedIP := checkDomainIPMatch(c.data.Domain, serverIPs)
-			if !match {
-				fmt.Printf("Warning: Your domain %s does not appear to resolve to this server.\n", c.data.Domain)
-				fmt.Println("This may cause SSL certificate validation to fail.")
-				fmt.Println("Options:")
-				fmt.Println("1. Update your domain's DNS records to point to one of this server's IPs")
-				fmt.Println("2. Ensure you're running this installer on the correct server")
-				fmt.Print("Do you want to continue anyway? [y/N]: ")
-				confirm, _ := reader.ReadString('\n')
-				confirm = strings.TrimSpace(strings.ToLower(confirm))
-				if confirm != "y" && confirm != "yes" {
-					continue
-				}
-			} else {
-				fmt.Printf("Success: Domain %s correctly resolves to this server's IP (%s)\n", c.data.Domain, matchedIP)
-			}
-		}
+		// Check DNS records and store warnings instead of blocking
+		c.CheckDNSAndStoreWarnings(c.data.Domain)
 
 		fmt.Print("Enter admin email address: ")
 		adminEmail, err := reader.ReadString('\n')
@@ -373,7 +328,11 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
-		fmt.Printf("%s => %s\n", c.data.Domain, formatIPs(ips))
+		if c.HasDNSWarnings() {
+			fmt.Printf("DNS Status: ⚠️  Warnings detected (installation will continue)\n")
+		} else {
+			fmt.Printf("DNS Status: ✅ Verified\n")
+		}
 		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
 		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
 		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
@@ -673,6 +632,79 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("private key is required")
 	}
 	return nil
+}
+
+// CheckDNSAndStoreWarnings checks DNS configuration and stores warnings instead of blocking
+func (c *Config) CheckDNSAndStoreWarnings(domain string) {
+	fmt.Printf("🔍 Checking DNS configuration for %s...\n", domain)
+
+	// Clear any existing warnings
+	c.data.DNSWarnings = []string{}
+
+	ips, err := net.LookupIP(domain)
+	if err != nil {
+		warning := fmt.Sprintf("DNS lookup failed for %s: %v", domain, err)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Suggestion: Check that your domain is registered and DNS is configured correctly")
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Suggestion: Verify your DNS records using https://dnschecker.org/")
+		return
+	}
+
+	if len(ips) == 0 {
+		warning := "No A/AAAA records found for domain " + domain
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "DNS propagation may take from a few minutes to hours to complete")
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "You can check DNS records at https://mxtoolbox.com/SuperTool.aspx")
+		return
+	}
+
+	// Check if domain resolves to server IP
+	serverIPs, err := getCurrentServerIP()
+	if err != nil {
+		warning := fmt.Sprintf("Could not determine server IP addresses: %v", err)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Domain %s resolves to: %s", domain, formatIPs(ips)))
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Please verify manually that one of these IPs matches this server")
+	} else {
+		match, matchedIP := checkDomainIPMatch(domain, serverIPs)
+		if !match {
+			warning := fmt.Sprintf("Domain %s does not resolve to this server", domain)
+			c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+			c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Server IP(s): %s", serverIPs))
+			c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Domain resolves to: %s", formatIPs(ips)))
+			c.data.DNSWarnings = append(c.data.DNSWarnings, "Update your domain's DNS records to point to this server's IP")
+		} else {
+			fmt.Printf("✅ DNS configuration verified: %s resolves to server IP %s\n", domain, matchedIP)
+		}
+	}
+
+	// Display warnings if any exist
+	if len(c.data.DNSWarnings) > 0 {
+		c.displayDNSWarnings()
+	}
+}
+
+// displayDNSWarnings shows DNS configuration warnings to the user
+func (c *Config) displayDNSWarnings() {
+	fmt.Println("\n⚠️  DNS Configuration Warnings:")
+	for _, warning := range c.data.DNSWarnings {
+		if strings.HasPrefix(warning, "Suggestion:") {
+			fmt.Printf("   💡 %s\n", warning[11:]) // Remove "Suggestion:" prefix
+		} else {
+			fmt.Printf("   • %s\n", warning)
+		}
+	}
+	fmt.Printf("\n📋 Installation will continue, but you may need to fix DNS issues for external access.\n\n")
+}
+
+// GetDNSWarnings returns the current DNS warnings
+func (c *Config) GetDNSWarnings() []string {
+	return c.data.DNSWarnings
+}
+
+// HasDNSWarnings returns true if there are DNS configuration warnings
+func (c *Config) HasDNSWarnings() bool {
+	return len(c.data.DNSWarnings) > 0
 }
 
 // generatePrivateKey generates a secure random private key

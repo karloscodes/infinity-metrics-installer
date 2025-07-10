@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ type Config struct {
 	Debug          bool
 	VMName         string   // Only used for local environment
 	MultipassFlags []string // Only used for local environment
+	DirectRun      bool     // If true, run directly without VM even in local environment
 }
 
 // DefaultConfig returns a Config with default values
@@ -78,16 +80,20 @@ func (r *TestRunner) Run() error {
 	r.logf("Binary path: %s", r.Config.BinaryPath)
 	r.logf("Environment variables: %v", r.Config.EnvVars)
 
-	if r.env == CIEnvironment {
-		return r.runInCI()
+	if r.env == CIEnvironment || r.Config.DirectRun {
+		return r.runDirectly()
 	} else {
 		return r.runLocally()
 	}
 }
 
-// runInCI runs the command directly in CI
-func (r *TestRunner) runInCI() error {
-	r.logf("Running directly in CI environment")
+// runDirectly runs the command directly (used in CI or when DirectRun is true)
+func (r *TestRunner) runDirectly() error {
+	if r.Config.DirectRun {
+		r.logf("Running directly (DirectRun mode)")
+	} else {
+		r.logf("Running directly in CI environment")
+	}
 
 	// Create the command
 	cmd := exec.Command(r.Config.BinaryPath, r.Config.Args...)
@@ -113,7 +119,7 @@ func (r *TestRunner) runInCI() error {
 	return r.runWithTimeout(cmd)
 }
 
-// runLocally runs the command in a multipass VM
+// runLocally runs the command in a multipass VM with improved error handling
 func (r *TestRunner) runLocally() error {
 	r.logf("Running in local environment with Multipass VM")
 
@@ -127,8 +133,9 @@ func (r *TestRunner) runLocally() error {
 	cleanCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
 	cleanCmd.Run() // Ignore errors
 
-	// Create new VM
+	// Create new VM with more explicit configuration
 	r.logf("Creating new VM: %s", r.Config.VMName)
+	
 	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G"}
 
 	// Add any additional flags
@@ -144,50 +151,48 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to launch VM: %w", err)
 	}
 
-	// Wait for VM to be ready
-	r.logf("Waiting for VM to be ready")
+	// Give the VM more time to settle and initialize completely
+	r.logf("Waiting for VM to fully initialize...")
+	time.Sleep(30 * time.Second)
+
+	// Use a file-based approach to check if VM is ready instead of SSH
+	r.logf("Testing VM connectivity using file operations...")
+	
+	// Create a temp directory for testing
+	tempDir, err := os.MkdirTemp("", "multipass-test-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	
+	// Create a test file
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		return fmt.Errorf("failed to create test file: %w", err)
+	}
+	
+	// Try to copy file to VM using transfer (this works better than exec)
 	vmReady := false
-	for i := 0; i < 60; i++ { // Give up to 60 seconds
-		cmd := exec.Command("multipass", "info", r.Config.VMName)
-		output, err := cmd.CombinedOutput()
-		outputStr := string(output)
-		r.logf("VM status check attempt %d/60: %v", i+1, err)
-
-		if err == nil {
-			r.logf("VM info output: %s", outputStr)
-			if strings.Contains(outputStr, "State:") && strings.Contains(outputStr, "Running") {
-				vmReady = true
-				r.logf("VM is ready after %d seconds", i+1)
-				break
-			}
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-	if !vmReady {
-		// Get detailed info about the VM for debugging
-		infoCmd := exec.Command("multipass", "info", r.Config.VMName, "--format", "yaml")
-		infoOutput, _ := infoCmd.CombinedOutput()
-		r.logf("Detailed VM info: \n%s", string(infoOutput))
-
-		// Try one more time with a different string check to be sure
-		finalCheckCmd := exec.Command("multipass", "list")
-		finalOutput, _ := finalCheckCmd.CombinedOutput()
-		if strings.Contains(string(finalOutput), r.Config.VMName) &&
-			strings.Contains(string(finalOutput), "Running") {
-			r.logf("VM appears to be ready based on 'multipass list' output")
+	for i := 0; i < 30; i++ {
+		r.logf("VM readiness check %d/30", i+1)
+		
+		copyCmd := exec.Command("multipass", "transfer", testFile, fmt.Sprintf("%s:/tmp/test.txt", r.Config.VMName))
+		if err := copyCmd.Run(); err == nil {
+			r.logf("VM is ready for file operations after %d attempts", i+1)
 			vmReady = true
+			break
 		} else {
-			return fmt.Errorf("timeout waiting for VM to be ready")
+			r.logf("Transfer test failed (attempt %d): %v", i+1, err)
+			time.Sleep(2 * time.Second)
 		}
 	}
+	
+	if !vmReady {
+		return fmt.Errorf("VM failed to become ready for file operations")
+	}
 
-	// Before running the installer command, set the ENV variable in the VM
-	envSetCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c", "echo 'export ENV=test' >> /etc/environment")
-	envSetCmd.Run() // Run this before your installer command
-
-	// Copy binary to VM
-	r.logf("Copying binary to VM")
+	// Copy binary to VM using transfer
+	r.logf("Copying binary to VM using transfer")
 	copyCmd := exec.Command("multipass", "transfer", r.Config.BinaryPath, fmt.Sprintf("%s:/home/ubuntu/infinity-metrics", r.Config.VMName))
 	copyCmd.Stdout = r.Logger
 	copyCmd.Stderr = r.Logger
@@ -196,104 +201,57 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to copy binary to VM: %w", err)
 	}
 
-	// Make binary executable and move to system location
-	r.logf("Making binary executable")
-	execCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "chmod", "+x", "/home/ubuntu/infinity-metrics")
-	execCmd.Stdout = r.Logger
-	execCmd.Stderr = r.Logger
+	// Create a script file locally that will set up and run the installer
+	scriptContent := fmt.Sprintf(`#!/bin/bash
+set -e
 
-	if err := execCmd.Run(); err != nil {
-		return fmt.Errorf("failed to make binary executable: %w", err)
-	}
+# Make binary executable and move to system location
+chmod +x /home/ubuntu/infinity-metrics
+sudo mv /home/ubuntu/infinity-metrics /usr/local/bin/infinity-metrics
 
-	r.logf("Moving binary to system location")
-	moveCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "mv", "/home/ubuntu/infinity-metrics", "/usr/local/bin/infinity-metrics")
-	moveCmd.Stdout = r.Logger
-	moveCmd.Stderr = r.Logger
+# Set environment variables
+export ENV=test
+%s
 
-	if err := moveCmd.Run(); err != nil {
-		return fmt.Errorf("failed to move binary: %w", err)
-	}
-
-	// Run the command in VM
-	r.logf("Running command in VM: infinity-metrics %s", strings.Join(r.Config.Args, " "))
-
-	// Set environment variables in the VM before running the command
-	for k, v := range r.Config.EnvVars {
-		r.logf("Setting environment variable in VM: %s=%s", k, v)
-
-		// For environment variables that need to be available to the command
-		// we need to set them in both /etc/environment and export them directly
-
-		// Add to /etc/environment for persistence
-		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
-			fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
-		envOutput, err := envCmd.CombinedOutput()
-		if err != nil {
-			r.logf("Failed to set environment variable in /etc/environment %s: %v\nOutput: %s", k, err, string(envOutput))
-		}
-
-		// Also export it directly for immediate use
-		exportCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
-			fmt.Sprintf("export %s=%s", k, v))
-		exportOutput, err := exportCmd.CombinedOutput()
-		if err != nil {
-			r.logf("Failed to export environment variable %s: %v\nOutput: %s", k, err, string(exportOutput))
-		}
-	}
-
-	// Create a command that passes environment variables to the sudo command
-	// We need to construct a command that preserves environment variables through sudo
-
-	// Create a test script that will handle the installation with the input
-	scriptContent := "#!/bin/bash\n\n"
-
-	// Add environment variables to the script
-	for k, v := range r.Config.EnvVars {
-		scriptContent += fmt.Sprintf("export %s='%s'\n", k, v)
-	}
-
-	// Create a simpler script that directly passes environment variables
-	scriptContent += fmt.Sprintf(`
-# Run the installer with environment variables
-echo '%s' | sudo ADMIN_PASSWORD='securepassword123' SKIP_DNS_VALIDATION=1 NONINTERACTIVE=1 /usr/local/bin/infinity-metrics %s
+# Run the installer with provided arguments and input
+echo '%s' | sudo /usr/local/bin/infinity-metrics %s
 
 # Check the result
 RESULT=$?
 if [ $RESULT -ne 0 ]; then
   echo "Installation failed with exit code: $RESULT"
-  # Try to get logs
-  if [ -f /var/log/infinity-metrics-installer.log ]; then
-    echo "Installer log:"
-    cat /var/log/infinity-metrics-installer.log
-  fi
   exit $RESULT
 fi
 
 echo "Installation completed successfully"
-`, strings.ReplaceAll(r.Config.StdinInput, "'", "''"), strings.Join(r.Config.Args, " "))
+`,
+		r.buildEnvExports(),
+		strings.ReplaceAll(r.Config.StdinInput, "'", "''"),
+		strings.Join(r.Config.Args, " "))
 
-	// Create the script in the VM
-	scriptPath := "/tmp/run_infinity_metrics.sh"
-	scriptCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "bash", "-c", fmt.Sprintf("cat > %s << 'EOF'\n%sEOF\nchmod +x %s", scriptPath, scriptContent, scriptPath))
-	scriptOutput, err := scriptCmd.CombinedOutput()
-	if err != nil {
-		r.logf("Failed to create script: %v\nOutput: %s", err, string(scriptOutput))
-		return err
+	// Write script to temp file
+	scriptPath := filepath.Join(tempDir, "run_installer.sh")
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		return fmt.Errorf("failed to create script: %w", err)
 	}
 
-	r.logf("Created script to run command with environment variables:\n%s", scriptContent)
+	r.logf("Created installer script:\n%s", scriptContent)
 
-	// Run the script
-	cmdParts := []string{"exec", r.Config.VMName, "--", scriptPath}
-	cmd := exec.Command("multipass", cmdParts...)
+	// Copy script to VM
+	scriptVMPath := fmt.Sprintf("%s:/home/ubuntu/run_installer.sh", r.Config.VMName)
+	copyScriptCmd := exec.Command("multipass", "transfer", scriptPath, scriptVMPath)
+	if err := copyScriptCmd.Run(); err != nil {
+		return fmt.Errorf("failed to copy script to VM: %w", err)
+	}
 
-	cmd.Stdin = strings.NewReader(r.Config.StdinInput)
-	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
-	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
+	// Execute the script using exec
+	r.logf("Executing installer script in VM")
+	execCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "bash", "/home/ubuntu/run_installer.sh")
+	execCmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
+	execCmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
 
 	// Run with timeout
-	err = r.runWithTimeout(cmd)
+	err = r.runWithTimeout(execCmd)
 
 	// If configured to keep VM, don't delete it
 	if os.Getenv("KEEP_VM") != "1" && err == nil {
@@ -305,6 +263,15 @@ echo "Installation completed successfully"
 	}
 
 	return err
+}
+
+// buildEnvExports creates export statements for environment variables
+func (r *TestRunner) buildEnvExports() string {
+	var exports []string
+	for k, v := range r.Config.EnvVars {
+		exports = append(exports, fmt.Sprintf("export %s='%s'", k, v))
+	}
+	return strings.Join(exports, "\n")
 }
 
 // runWithTimeout runs a command with the configured timeout

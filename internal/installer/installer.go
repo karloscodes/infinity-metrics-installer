@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"infinity-metrics-installer/internal/admin"
@@ -148,6 +149,9 @@ func (i *Installer) Run() error {
 	}
 	i.logger.Success("Daily automatic updates configured for 3:00 AM")
 
+	// Display DNS warnings and next steps
+	i.displayInstallationSummary()
+
 	return nil
 }
 
@@ -285,4 +289,61 @@ func (i *Installer) showProgress(progressChan <-chan int, operationName string) 
 			}
 		}
 	}
+}
+
+// displayInstallationSummary shows final installation summary including DNS warnings
+func (i *Installer) displayInstallationSummary() {
+	data := i.config.GetData()
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("🎉 INSTALLATION COMPLETE!")
+	fmt.Println(strings.Repeat("=", 60))
+
+	fmt.Printf("✅ Infinity Metrics has been successfully installed\n")
+	fmt.Printf("✅ Domain: https://%s\n", data.Domain)
+	fmt.Printf("✅ Admin Email: %s\n", data.AdminEmail)
+	fmt.Printf("✅ Installation Directory: %s\n", data.InstallDir)
+	fmt.Printf("✅ Daily updates scheduled for 3:00 AM\n")
+
+	// Check if there are DNS warnings
+	if i.config.HasDNSWarnings() {
+		fmt.Println("\n⚠️  DNS CONFIGURATION REQUIRED")
+		fmt.Println(strings.Repeat("-", 40))
+		fmt.Println("The following DNS issues were detected during installation:")
+
+		for _, warning := range i.config.GetDNSWarnings() {
+			if strings.HasPrefix(warning, "Suggestion:") {
+				fmt.Printf("   💡 %s\n", warning[11:])
+			} else {
+				fmt.Printf("   • %s\n", warning)
+			}
+		}
+
+		fmt.Println("\n🔧 NEXT STEPS:")
+		fmt.Printf("   1. Configure DNS: Add A record for %s pointing to this server\n", data.Domain)
+		fmt.Println("   2. Wait for DNS propagation (up to 24 hours)")
+		fmt.Printf("   3. Test access: https://%s\n", data.Domain)
+		fmt.Println("   4. Monitor logs: docker logs infinity-metrics-caddy")
+
+		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
+	} else {
+		fmt.Println("\n🌐 DNS CONFIGURATION VERIFIED")
+		fmt.Println(strings.Repeat("-", 40))
+		fmt.Printf("✅ Your domain %s is correctly configured\n", data.Domain)
+		fmt.Printf("✅ You should be able to access: https://%s\n", data.Domain)
+
+		fmt.Println("\n🔧 NEXT STEPS:")
+		fmt.Printf("   1. Access your dashboard: https://%s\n", data.Domain)
+		fmt.Printf("   2. Login with: %s\n", data.AdminEmail)
+		fmt.Println("   3. Monitor system: docker ps | grep infinity-metrics")
+	}
+
+	fmt.Println("\n📊 VERIFY INSTALLATION:")
+	fmt.Println("   • Check containers: docker ps | grep infinity-metrics")
+	fmt.Println("   • View logs: docker logs infinity-metrics-app")
+	fmt.Println("   • Check SSL: docker logs infinity-metrics-caddy")
+
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("Thank you for using Infinity Metrics!")
+	fmt.Println(strings.Repeat("=", 60))
 }
