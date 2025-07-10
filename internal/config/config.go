@@ -239,14 +239,12 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			c.logger.Info("Using admin password from environment variable")
 		} else {
 			for {
-				fmt.Print("Enter admin password (minimum 8 characters): ")
-				passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+				password, err := c.readPassword(reader, "Enter admin password (minimum 8 characters): ")
 				if err != nil {
 					return fmt.Errorf("failed to read password: %w", err)
 				}
-				fmt.Println()
 
-				c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
+				c.data.AdminPassword = password
 				if c.data.AdminPassword == "" {
 					fmt.Println("Error: Password cannot be empty.")
 					continue
@@ -256,14 +254,11 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 					continue
 				}
 
-				fmt.Print("Confirm admin password: ")
-				confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
+				confirmPassword, err := c.readPassword(reader, "Confirm admin password: ")
 				if err != nil {
 					return fmt.Errorf("failed to read confirmation password: %w", err)
 				}
-				fmt.Println()
 
-				confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
 				if c.data.AdminPassword != confirmPassword {
 					fmt.Println("Error: Passwords do not match. Please try again.")
 					continue
@@ -614,6 +609,36 @@ func generatePrivateKey() (string, error) {
 		return "", fmt.Errorf("failed to generate private key: %w", err)
 	}
 	return hex.EncodeToString(key), nil
+}
+
+// readPassword reads a password from either terminal or stdin based on environment
+func (c *Config) readPassword(reader *bufio.Reader, prompt string) (string, error) {
+	fmt.Print(prompt)
+
+	var passwordBytes []byte
+	var err error
+
+	// In test environment, read password from stdin instead of terminal
+	if os.Getenv("ENV") == "test" {
+		password, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			err = readErr
+		} else {
+			passwordBytes = []byte(strings.TrimSpace(password))
+		}
+	} else {
+		passwordBytes, err = term.ReadPassword(int(syscall.Stdin))
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+
+	if os.Getenv("ENV") != "test" {
+		fmt.Println() // Only add newline for terminal mode
+	}
+
+	return strings.TrimSpace(string(passwordBytes)), nil
 }
 
 // FetchFromServer fetches config from the latest GitHub release

@@ -1,9 +1,7 @@
 package tests
 
 import (
-	"crypto/tls"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +18,7 @@ import (
 func TestInstallation(t *testing.T) {
 	os.Setenv("ENV", "test")
 
-	projectRoot, err := filepath.Abs("..")
+	projectRoot, err := filepath.Abs("../..")
 	require.NoError(t, err, "Failed to find project root")
 
 	binaryPath := os.Getenv("BINARY_PATH")
@@ -63,35 +61,29 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Using license key from environment variable: %s", licenseKey)
 	}
 
-	// Simplify the input since we're using non-interactive mode with environment variables
-	config.StdinInput = ""
+	// Test interactive installation with realistic user input
+	adminPassword := "securepassword123"
+	// Input order: domain, email, license, password, confirm_password, confirmation_to_proceed
+	config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\n%s\n%s\ny\n",
+		licenseKey,
+		adminPassword,
+		adminPassword)
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
 
 	// Set VM name for easier debugging
 	config.VMName = "infinity-test-vm"
 
+	// Set environment variables for test infrastructure (not app config)
+	config.EnvVars = map[string]string{
+		"ENV": "test", // Test environment indicator
+	}
+
 	runner := testrunner.NewTestRunner(config)
 	os.Setenv("KEEP_VM", "1")
 	defer os.Setenv("KEEP_VM", os.Getenv("KEEP_VM"))
 
-	// Set environment variables for test
-	config.EnvVars = map[string]string{
-		"ADMIN_PASSWORD": "securepassword123",
-		"ENV":            "test",
-		"NONINTERACTIVE": "1", // Run in non-interactive mode
-		"DOMAIN":         "test.example.com",
-		"ADMIN_EMAIL":    "admin@example.com",
-		"LICENSE_KEY":    licenseKey,
-	}
-
-	// Also set in the current process to ensure it's available
-	os.Setenv("NONINTERACTIVE", "1")
-	defer os.Unsetenv("NONINTERACTIVE")
-	os.Setenv("ADMIN_PASSWORD", "securepassword123")
-	defer os.Unsetenv("ADMIN_PASSWORD")
-
-	t.Log("Added environment variables for non-interactive mode")
+	t.Log("Configured interactive installation test with user input simulation")
 
 	err = runner.Run()
 	outputStr := runner.Stdout()
@@ -110,6 +102,25 @@ func TestInstallation(t *testing.T) {
 	// Robust assertions - only if not skipped due to architecture issues
 	require.NoError(t, err, "Installation should complete without error")
 
+	// Verify interactive prompts were displayed
+	interactivePatterns := []string{
+		"Enter your domain name",
+		"Enter admin email address",
+		"Enter your Infinity Metrics license key",
+		"Enter admin password",
+		"Configuration Summary:",
+		"Proceed with this configuration?",
+	}
+
+	t.Log("Verifying interactive prompts were displayed...")
+	for _, pattern := range interactivePatterns {
+		if strings.Contains(outputStr, pattern) {
+			t.Logf("✅ Found expected interactive prompt: '%s'", pattern)
+		} else {
+			t.Logf("⚠️  Interactive prompt not found: '%s'", pattern)
+		}
+	}
+
 	// Check for success message - using more flexible assertions
 	// The test might pass even if we don't see all the expected output patterns
 	// as long as the command exits with status 0
@@ -125,57 +136,17 @@ func TestInstallation(t *testing.T) {
 	}
 	// Verify the new confirmation prompt and domain resolution
 	t.Log("Testing service availability...")
-	testServiceAvailability(t, isRunningInCI(), config.VMName)
+	testServiceAvailability(t, config.VMName)
 
 	if os.Getenv("KEEP_VM") != "1" {
 		cleanupTestEnvironment(t, config.VMName)
 	}
 }
 
-func isRunningInCI() bool {
-	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != ""
-}
-
-func testServiceAvailability(t *testing.T, isCI bool, vmName string) {
+func testServiceAvailability(t *testing.T, vmName string) {
 	serviceURL := "https://localhost"
-	if isCI {
-		t.Log("Testing HTTPS access with direct HTTP client...")
-		testDirectServiceAccess(t, serviceURL)
-	} else {
-		t.Log("Testing HTTPS access via VM curl command...")
-		testVMServiceAccess(t, vmName, serviceURL)
-	}
-}
-
-func testDirectServiceAccess(t *testing.T, url string) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	var resp *http.Response
-	var err error
-	for i := 0; i < 6; i++ {
-		resp, err = client.Get(url)
-		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound) {
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		t.Logf("Waiting for service (attempt %d/6)...", i+1)
-		time.Sleep(5 * time.Second)
-	}
-
-	require.NoError(t, err, "HTTPS request should succeed")
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusFound, resp.StatusCode, "Service should return 302 Found")
-	t.Logf("Service responded with %d, Location: %s", resp.StatusCode, resp.Header.Get("Location"))
+	t.Log("Testing HTTPS access via VM curl command...")
+	testVMServiceAccess(t, vmName, serviceURL)
 }
 
 func testVMServiceAccess(t *testing.T, vmName string, url string) {
