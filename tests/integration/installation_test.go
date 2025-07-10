@@ -93,12 +93,6 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Installer Errors:\n%s", errorStr)
 	}
 
-	// Check for architecture-related Docker errors
-	if err != nil && (strings.Contains(errorStr, "no matching manifest for") ||
-		strings.Contains(outputStr, "no matching manifest for")) {
-		t.Skip("Skipping test due to Docker image architecture incompatibility")
-	}
-
 	// Robust assertions - only if not skipped due to architecture issues
 	require.NoError(t, err, "Installation should complete without error")
 
@@ -145,43 +139,19 @@ func TestInstallation(t *testing.T) {
 
 func testServiceAvailability(t *testing.T, vmName string) {
 	serviceURL := "https://localhost"
-	t.Log("Testing HTTPS access via VM curl command...")
-	testVMServiceAccess(t, vmName, serviceURL)
-}
-
-func testVMServiceAccess(t *testing.T, vmName string, url string) {
-	var success bool
-	var finalOutput string
-	var is302 bool
-
-	for i := 0; i < 6; i++ {
-		cmd := exec.Command("multipass", "exec", vmName, "--",
-			"curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
-		output, err := cmd.CombinedOutput()
-		outputStr := strings.TrimSpace(string(output))
-		finalOutput = outputStr
-
-		t.Logf("Curl attempt %d/6, result: %s, error: %v", i+1, outputStr, err)
-		if err == nil && outputStr == "302" {
-			success = true
-			is302 = true
-			break
-		} else if err == nil && outputStr == "200" {
-			success = true
-		}
-		time.Sleep(5 * time.Second)
-	}
+	runner := testrunner.NewTestRunner(testrunner.Config{VMName: vmName})
+	t.Log("Testing HTTPS access via service check...")
+	success, is302, finalOutput := runner.CheckServiceAvailability(serviceURL, 6, t)
 
 	if !success {
-		logCmd := exec.Command("multipass", "exec", vmName, "--",
-			"sudo", "cat", "/opt/infinity-metrics/logs/infinity-metrics.log")
-		logOutput, _ := logCmd.CombinedOutput()
-		t.Logf("Service logs:\n%s", string(logOutput))
+		logCmd := "sudo cat /opt/infinity-metrics/logs/infinity-metrics.log"
+		logOutput, _ := runner.RunSSHCommand(logCmd)
+		t.Logf("Service logs:\n%s", logOutput)
 	}
 
 	assert.True(t, success, fmt.Sprintf("Service should be accessible, got: %s", finalOutput))
 	assert.True(t, is302, "Service should return 302 redirect")
-	t.Log("Service verified in VM")
+	t.Log("Service verified in VM or locally")
 }
 
 func cleanupTestEnvironment(t *testing.T, vmName string) {

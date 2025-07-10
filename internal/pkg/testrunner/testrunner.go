@@ -74,7 +74,9 @@ func NewTestRunner(config Config) *TestRunner {
 	}
 }
 
-// Run executes the command
+// Run executes the command in the appropriate environment.
+// - In CI or if DirectRun is true, runs the binary directly on the host (see runDirectly).
+// - Otherwise, runs the binary inside a fresh Multipass VM (see runInVM).
 func (r *TestRunner) Run() error {
 	r.logf("Starting test in %s environment", r.env)
 	r.logf("Binary path: %s", r.Config.BinaryPath)
@@ -83,11 +85,12 @@ func (r *TestRunner) Run() error {
 	if r.env == CIEnvironment || r.Config.DirectRun {
 		return r.runDirectly()
 	} else {
-		return r.runLocally()
+		return r.runInVM()
 	}
 }
 
-// runDirectly runs the command directly (used in CI or when DirectRun is true)
+// runDirectly runs the installer binary directly on the host system.
+// Used for fast feedback in CI or local dev, but does not test real system effects.
 func (r *TestRunner) runDirectly() error {
 	if r.Config.DirectRun {
 		r.logf("Running directly (DirectRun mode)")
@@ -119,8 +122,9 @@ func (r *TestRunner) runDirectly() error {
 	return r.runWithTimeout(cmd)
 }
 
-// runLocally runs the command in a multipass VM with improved error handling
-func (r *TestRunner) runLocally() error {
+// runInVM provisions a fresh Multipass VM, injects your SSH key, copies the binary and script, and runs the installer inside the VM.
+// This simulates a real user/server environment and tests the full install process, including system-level effects.
+func (r *TestRunner) runInVM() error {
 	r.logf("Running in local environment with Multipass VM")
 
 	// Check for multipass availability
@@ -133,12 +137,35 @@ func (r *TestRunner) runLocally() error {
 	cleanCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
 	cleanCmd.Run() // Ignore errors
 
-	// Create new VM with more explicit configuration
-	r.logf("Creating new VM: %s", r.Config.VMName)
+	// Prepare cloud-init with SSH key for VM access
+	sshKeyPath := os.Getenv("SSH_KEY_PATH")
+	if sshKeyPath == "" {
+		sshKeyPath = filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519.pub")
+	}
+	// If the SSH public key does not exist, generate a new Ed25519 key pair
+	if _, err := os.Stat(sshKeyPath); os.IsNotExist(err) {
+		privateKeyPath := strings.TrimSuffix(sshKeyPath, ".pub")
+		r.logf("SSH public key not found at %s, generating new Ed25519 key pair...", sshKeyPath)
+		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", privateKeyPath, "-N", "")
+		cmd.Stdout = r.Logger
+		cmd.Stderr = r.Logger
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to generate SSH key pair: %w", err)
+		}
+	}
+	pubKeyBytes, err := os.ReadFile(sshKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read SSH public key (%s): %w", sshKeyPath, err)
+	}
+	cloudInit := fmt.Sprintf(`#cloud-config\nusers:\n  - default\n  - name: ubuntu\n    ssh_authorized_keys:\n      - %s\n`, strings.TrimSpace(string(pubKeyBytes)))
+	cloudInitPath := filepath.Join(os.TempDir(), "cloud-init.yaml")
+	if err := os.WriteFile(cloudInitPath, []byte(cloudInit), 0o644); err != nil {
+		return fmt.Errorf("failed to write cloud-init file: %w", err)
+	}
 
-	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G"}
-
-	// Add any additional flags
+	// Create new VM with cloud-init and any extra flags
+	r.logf("Creating new VM: %s with cloud-init", r.Config.VMName)
+	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G", "--cloud-init", cloudInitPath}
 	args = append(args, r.Config.MultipassFlags...)
 
 	launchCmd := exec.Command("multipass", args...)
@@ -151,12 +178,12 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to launch VM: %w", err)
 	}
 
-	// Give the VM more time to settle and initialize completely
+	// Wait for the VM to be ready for SSH/SCP
 	r.logf("Waiting for VM to fully initialize...")
 	time.Sleep(30 * time.Second)
 
-	// Use a file-based approach to check if VM is ready instead of SSH
-	r.logf("Testing VM connectivity using file operations...")
+	// Use a file-based approach to check if VM is ready for SSH/SCP
+	r.logf("Testing VM connectivity using file operations (SCP)...")
 
 	// Create a temp directory for testing
 	tempDir, err := os.MkdirTemp("", "multipass-test-*")
@@ -171,18 +198,18 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to create test file: %w", err)
 	}
 
-	// Try to copy file to VM using transfer (this works better than exec)
+	// Try to copy file to VM using scp/ssh instead of multipass transfer for readiness check
 	vmReady := false
 	for i := 0; i < 30; i++ {
 		r.logf("VM readiness check %d/30", i+1)
 
-		copyCmd := exec.Command("multipass", "transfer", testFile, fmt.Sprintf("%s:/tmp/test.txt", r.Config.VMName))
-		if err := copyCmd.Run(); err == nil {
+		err := r.CopyFileToVMOverSSH(testFile, "/tmp/test.txt")
+		if err == nil {
 			r.logf("VM is ready for file operations after %d attempts", i+1)
 			vmReady = true
 			break
 		} else {
-			r.logf("Transfer test failed (attempt %d): %v", i+1, err)
+			r.logf("SCP test failed (attempt %d): %v", i+1, err)
 			time.Sleep(2 * time.Second)
 		}
 	}
@@ -191,14 +218,10 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("VM failed to become ready for file operations")
 	}
 
-	// Copy binary to VM using transfer
-	r.logf("Copying binary to VM using transfer")
-	copyCmd := exec.Command("multipass", "transfer", r.Config.BinaryPath, fmt.Sprintf("%s:/home/ubuntu/infinity-metrics", r.Config.VMName))
-	copyCmd.Stdout = r.Logger
-	copyCmd.Stderr = r.Logger
-
-	if err := copyCmd.Run(); err != nil {
-		return fmt.Errorf("failed to copy binary to VM: %w", err)
+	// Copy binary to VM using scp/ssh instead of multipass transfer
+	r.logf("Copying binary to VM using scp/ssh")
+	if err := r.CopyFileToVMOverSSH(r.Config.BinaryPath, "/home/ubuntu/infinity-metrics"); err != nil {
+		return fmt.Errorf("failed to copy binary to VM via scp: %w", err)
 	}
 
 	// Create a script file locally that will set up and run the installer
@@ -237,11 +260,10 @@ echo "Installation completed successfully"
 
 	r.logf("Created installer script:\n%s", scriptContent)
 
-	// Copy script to VM
-	scriptVMPath := fmt.Sprintf("%s:/home/ubuntu/run_installer.sh", r.Config.VMName)
-	copyScriptCmd := exec.Command("multipass", "transfer", scriptPath, scriptVMPath)
-	if err := copyScriptCmd.Run(); err != nil {
-		return fmt.Errorf("failed to copy script to VM: %w", err)
+	// Copy script to VM using scp/ssh instead of multipass transfer
+	scriptVMPath := "/home/ubuntu/run_installer.sh"
+	if err := r.CopyFileToVMOverSSH(scriptPath, scriptVMPath); err != nil {
+		return fmt.Errorf("failed to copy script to VM via scp: %w", err)
 	}
 
 	// Execute the script using exec
@@ -263,6 +285,88 @@ echo "Installation completed successfully"
 	}
 
 	return err
+}
+
+// GetVMIP returns the IPv4 address of the Multipass VM
+func (r *TestRunner) GetVMIP() (string, error) {
+	cmd := exec.Command("multipass", "info", r.Config.VMName)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "IPv4") {
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				return parts[1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("IP not found for VM %s", r.Config.VMName)
+}
+
+// RunSSHCommand runs a shell command in the VM via SSH (requires SSH enabled in the VM)
+func (r *TestRunner) RunSSHCommand(command string) (string, error) {
+	ip, err := r.GetVMIP()
+	if err != nil {
+		return "", err
+	}
+	sshCmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "ubuntu@"+ip, command)
+	out, err := sshCmd.CombinedOutput()
+	return string(out), err
+}
+
+// CopyFileToVM copies a file to the VM using multipass transfer
+func (r *TestRunner) CopyFileToVM(localPath, remotePath string) error {
+	cmd := exec.Command("multipass", "transfer", localPath, fmt.Sprintf("%s:%s", r.Config.VMName, remotePath))
+	return cmd.Run()
+}
+
+// CopyFileToVMOverSSH copies a file to the VM using scp/ssh
+func (r *TestRunner) CopyFileToVMOverSSH(localPath, remotePath string) error {
+	ip, err := r.GetVMIP()
+	if err != nil {
+		return err
+	}
+	scpCmd := exec.Command("scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", localPath, fmt.Sprintf("ubuntu@%s:%s", ip, remotePath))
+	out, err := scpCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("scp failed: %v, output: %s", err, string(out))
+	}
+	return nil
+}
+
+// CheckServiceAvailability checks if the service is available at the given URL.
+// In VM mode, it uses SSH to curl from inside the VM. In direct mode, it curls locally.
+func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interface{ Logf(string, ...interface{}); Errorf(string, ...interface{}) }) (success bool, is302 bool, finalOutput string) {
+	for i := 0; i < attempts; i++ {
+		var output string
+		var err error
+		if r.env == LocalEnvironment && !r.Config.DirectRun {
+			// VM mode: curl via SSH
+			sshCmd := fmt.Sprintf("curl -k -s -o /dev/null -w '%%{http_code}' %s", url)
+			output, err = r.RunSSHCommand(sshCmd)
+		} else {
+			// Direct mode: curl locally
+			cmd := exec.Command("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+			out, e := cmd.CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			err = e
+		}
+		outputStr := strings.TrimSpace(output)
+		finalOutput = outputStr
+		t.Logf("Service check attempt %d/%d, result: %s, error: %v", i+1, attempts, outputStr, err)
+		if err == nil && outputStr == "302" {
+			success = true
+			is302 = true
+			break
+		} else if err == nil && outputStr == "200" {
+			success = true
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return
 }
 
 // buildEnvExports creates export statements for environment variables
