@@ -74,12 +74,10 @@ func TestInstallation(t *testing.T) {
 		// Use localhost as domain in CI
 		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\n\n", licenseKey)
 	} else {
-		// Input order: domain, email, license, password, confirm_password, confirmation_to_proceed
-		config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\n%s\n%s\ny\n",
-			licenseKey,
-			adminPassword,
-			adminPassword)
+		// If ADMIN_PASSWORD is set, do NOT provide password/confirmation in stdin
 		config.EnvVars["ADMIN_PASSWORD"] = adminPassword
+		config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\ny\n",
+			licenseKey)
 	}
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
@@ -127,6 +125,7 @@ func TestInstallation(t *testing.T) {
 	}
 
 	for _, pattern := range successPatterns {
+		assert.Contains(t, outputStr, pattern, "Output should contain success pattern '%s'", pattern)
 		if !strings.Contains(outputStr, pattern) {
 			t.Logf("Warning: Output doesn't contain expected pattern '%s', but command succeeded", pattern)
 		}

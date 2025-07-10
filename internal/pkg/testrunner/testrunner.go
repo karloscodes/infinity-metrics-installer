@@ -292,14 +292,15 @@ func (r *TestRunner) GetVMIP() (string, error) {
 	return "", fmt.Errorf("IP not found for VM %s", r.Config.VMName)
 }
 
-// RunSSHCommand runs a shell command in the VM via SSH (requires SSH enabled in the VM)
-func (r *TestRunner) RunSSHCommand(command string) (string, error) {
-	ip, err := r.GetVMIP()
-	if err != nil {
-		return "", err
+// RunMultipassCommand runs a shell command in the VM via multipass exec
+func (r *TestRunner) RunMultipassCommand(command string, useSudo bool) (string, error) {
+	args := []string{"exec", r.Config.VMName, "--"}
+	if useSudo {
+		args = append(args, "sudo")
 	}
-	sshCmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "ubuntu@"+ip, command)
-	out, err := sshCmd.CombinedOutput()
+	args = append(args, "sh", "-c", command)
+	cmd := exec.Command("multipass", args...)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
@@ -309,22 +310,18 @@ func (r *TestRunner) CopyFileToVM(localPath, remotePath string) error {
 	return cmd.Run()
 }
 
-// CopyFileToVMOverSSH copies a file to the VM using scp/ssh
+// Deprecated: Use CopyFileToVM for VM file copy in local mode
 func (r *TestRunner) CopyFileToVMOverSSH(localPath, remotePath string) error {
-	ip, err := r.GetVMIP()
-	if err != nil {
-		return err
-	}
-	scpCmd := exec.Command("scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", localPath, fmt.Sprintf("ubuntu@%s:%s", ip, remotePath))
-	out, err := scpCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("scp failed: %v, output: %s", err, string(out))
-	}
-	return nil
+	return fmt.Errorf("CopyFileToVMOverSSH is deprecated; use CopyFileToVM with multipass instead")
+}
+
+// Deprecated: Use RunMultipassCommand for VM command execution in local mode
+func (r *TestRunner) RunSSHCommand(command string) (string, error) {
+	return "", fmt.Errorf("RunSSHCommand is deprecated; use RunMultipassCommand with multipass instead")
 }
 
 // CheckServiceAvailability checks if the service is available at the given URL.
-// In VM mode, it uses SSH to curl from inside the VM. In direct mode, it curls locally.
+// In VM mode, it uses multipass exec to curl from inside the VM. In direct mode, it curls locally.
 func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interface {
 	Logf(string, ...interface{})
 	Errorf(string, ...interface{})
@@ -334,9 +331,11 @@ func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interf
 		var output string
 		var err error
 		if r.env == LocalEnvironment && !r.Config.DirectRun {
-			// VM mode: curl via SSH
-			sshCmd := fmt.Sprintf("curl -k -s -o /dev/null -w '%%{http_code}' %s", url)
-			output, err = r.RunSSHCommand(sshCmd)
+			// VM mode: curl via multipass exec
+			cmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+			out, e := cmd.CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			err = e
 		} else {
 			// Direct mode: curl locally
 			cmd := exec.Command("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
