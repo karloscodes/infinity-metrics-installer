@@ -44,6 +44,17 @@ jobs:
       
       - name: Run integration tests
         run: make test-integration
+
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          echo "Collecting Docker container logs for debugging..."
+          docker ps -a
+          for c in $(docker ps -aq); do
+            echo "\n===== Logs for container $c ====="
+            docker logs $c || true
+          done
+          echo "\n===== End of Docker logs ====="
   # lint:
   #   runs-on: ubuntu-latest
   #   steps:

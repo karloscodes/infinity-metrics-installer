@@ -1,7 +1,9 @@
 package tests
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,10 @@ import (
 
 	"infinity-metrics-installer/internal/pkg/testrunner"
 )
+
+func isRunningInCI() bool {
+	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != ""
+}
 
 func TestInstallation(t *testing.T) {
 	os.Setenv("ENV", "test")
@@ -61,23 +67,24 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Using license key from environment variable: %s", licenseKey)
 	}
 
-	// Test interactive installation with realistic user input
 	adminPassword := "securepassword123"
-	// Input order: domain, email, license, password, confirm_password, confirmation_to_proceed
-	config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\n%s\n%s\ny\n",
-		licenseKey,
-		adminPassword,
-		adminPassword)
+	if isRunningInCI() {
+		os.Setenv("ADMIN_PASSWORD", adminPassword)
+		t.Log("Set ADMIN_PASSWORD in CI environment")
+		// Use localhost as domain in CI
+		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\n\n", licenseKey)
+	} else {
+		// Input order: domain, email, license, password, confirm_password, confirmation_to_proceed
+		config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\n%s\n%s\ny\n",
+			licenseKey,
+			adminPassword,
+			adminPassword)
+		config.EnvVars["ADMIN_PASSWORD"] = adminPassword
+	}
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
-
-	// Set VM name for easier debugging
 	config.VMName = "infinity-test-vm"
-
-	// Set environment variables for test infrastructure (not app config)
-	config.EnvVars = map[string]string{
-		"ENV": "test", // Test environment indicator
-	}
+	config.EnvVars["ENV"] = "test"
 
 	runner := testrunner.NewTestRunner(config)
 	os.Setenv("KEEP_VM", "1")
@@ -96,7 +103,6 @@ func TestInstallation(t *testing.T) {
 	// Robust assertions - only if not skipped due to architecture issues
 	require.NoError(t, err, "Installation should complete without error")
 
-	// Verify interactive prompts were displayed
 	interactivePatterns := []string{
 		"Enter your domain name",
 		"Enter admin email address",
@@ -115,9 +121,6 @@ func TestInstallation(t *testing.T) {
 		}
 	}
 
-	// Check for success message - using more flexible assertions
-	// The test might pass even if we don't see all the expected output patterns
-	// as long as the command exits with status 0
 	successPatterns := []string{
 		"Installation completed in",
 		"Installation verified successfully",
@@ -128,30 +131,87 @@ func TestInstallation(t *testing.T) {
 			t.Logf("Warning: Output doesn't contain expected pattern '%s', but command succeeded", pattern)
 		}
 	}
-	// Verify the new confirmation prompt and domain resolution
 	t.Log("Testing service availability...")
-	// testServiceAvailability(t, config.VMName)
+	testServiceAvailability(t, isRunningInCI(), config.VMName)
 
 	if os.Getenv("KEEP_VM") != "1" {
 		cleanupTestEnvironment(t, config.VMName)
 	}
 }
 
-func testServiceAvailability(t *testing.T, vmName string) {
+func testServiceAvailability(t *testing.T, isCI bool, vmName string) {
 	serviceURL := "https://localhost"
-	runner := testrunner.NewTestRunner(testrunner.Config{VMName: vmName})
-	t.Log("Testing HTTPS access via service check...")
-	success, is302, finalOutput := runner.CheckServiceAvailability(serviceURL, 6, t)
+	if isCI {
+		t.Log("Testing HTTPS access with direct HTTP client...")
+		testDirectServiceAccess(t, serviceURL)
+	} else {
+		t.Log("Testing HTTPS access via VM curl command...")
+		testVMServiceAccess(t, vmName, serviceURL)
+	}
+}
+
+func testDirectServiceAccess(t *testing.T, url string) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	var resp *http.Response
+	var err error
+	for i := 0; i < 6; i++ {
+		resp, err = client.Get(url)
+		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound) {
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		t.Logf("Waiting for service (attempt %d/6)...", i+1)
+		time.Sleep(5 * time.Second)
+	}
+
+	require.NoError(t, err, "HTTPS request should succeed")
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusFound, resp.StatusCode, "Service should return 302 Found")
+	t.Logf("Service responded with %d, Location: %s", resp.StatusCode, resp.Header.Get("Location"))
+}
+
+func testVMServiceAccess(t *testing.T, vmName string, url string) {
+	var success bool
+	var finalOutput string
+	var is302 bool
+
+	for i := 0; i < 6; i++ {
+		cmd := exec.Command("multipass", "exec", vmName, "--", "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+		output, err := cmd.CombinedOutput()
+		outputStr := strings.TrimSpace(string(output))
+		finalOutput = outputStr
+
+		t.Logf("Curl attempt %d/6, result: %s, error: %v", i+1, outputStr, err)
+		if err == nil && outputStr == "302" {
+			success = true
+			is302 = true
+			break
+		} else if err == nil && outputStr == "200" {
+			success = true
+		}
+		time.Sleep(5 * time.Second)
+	}
 
 	if !success {
-		logCmd := "sudo cat /opt/infinity-metrics/logs/infinity-metrics.log"
-		logOutput, _ := runner.RunSSHCommand(logCmd)
-		t.Logf("Service logs:\n%s", logOutput)
+		logCmd := exec.Command("multipass", "exec", vmName, "--", "sudo", "cat", "/opt/infinity-metrics/logs/infinity-metrics.log")
+		logOutput, _ := logCmd.CombinedOutput()
+		t.Logf("Service logs:\n%s", string(logOutput))
 	}
 
 	assert.True(t, success, fmt.Sprintf("Service should be accessible, got: %s", finalOutput))
 	assert.True(t, is302, "Service should return 302 redirect")
-	t.Log("Service verified in VM or locally")
+	t.Log("Service verified in VM")
 }
 
 func cleanupTestEnvironment(t *testing.T, vmName string) {
