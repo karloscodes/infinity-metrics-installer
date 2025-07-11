@@ -1,9 +1,7 @@
-name: Infinity Metrics Installer Tests
+name: Infinity Metrics Release
 
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
 
 jobs:
