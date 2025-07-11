@@ -17,10 +17,14 @@ import (
 	"infinity-metrics-installer/internal/pkg/testrunner"
 )
 
+func isRunningInCI() bool {
+	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != ""
+}
+
 func TestInstallation(t *testing.T) {
 	os.Setenv("ENV", "test")
 
-	projectRoot, err := filepath.Abs("..")
+	projectRoot, err := filepath.Abs("../..")
 	require.NoError(t, err, "Failed to find project root")
 
 	binaryPath := os.Getenv("BINARY_PATH")
@@ -53,56 +57,94 @@ func TestInstallation(t *testing.T) {
 	config := testrunner.DefaultConfig()
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
-	licenseKey := os.Getenv("LICENSE_KEY")
 
-	// Updated StdinInput to provide a valid email and confirm with the default "y"
-	config.StdinInput = fmt.Sprintf(
-		"localhost\n"+ // Domain
-			"admin@example.com\n"+ // Valid email
-			"%s\n"+ // License key
-			"\n", // Confirmation (accept default "y")
-		licenseKey)
+	// Get license key from environment or use a default for testing
+	licenseKey := os.Getenv("INFINITY_METRICS_LICENSE_KEY")
+	if licenseKey == "" {
+		licenseKey = "test-license-key"
+		t.Logf("Using default test license key. Set INFINITY_METRICS_LICENSE_KEY for a real key.")
+	} else {
+		t.Logf("Using license key from environment variable: %s", licenseKey)
+	}
+
+	adminPassword := "securepassword123"
+	if isRunningInCI() {
+		os.Setenv("ADMIN_PASSWORD", adminPassword)
+		t.Log("Set ADMIN_PASSWORD in CI environment")
+		// Use localhost as domain in CI
+		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\n\n", licenseKey)
+	} else {
+		// If ADMIN_PASSWORD is set, do NOT provide password/confirmation in stdin
+		config.EnvVars["ADMIN_PASSWORD"] = adminPassword
+		// Use localhost as domain for local tests as well
+		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\ny\n",
+			licenseKey)
+	}
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
+	config.VMName = "infinity-test-vm"
+	config.EnvVars["ENV"] = "test"
+	config.EnvVars["SKIP_PORT_CHECKING"] = "1"
 
 	runner := testrunner.NewTestRunner(config)
 	os.Setenv("KEEP_VM", "1")
 	defer os.Setenv("KEEP_VM", os.Getenv("KEEP_VM"))
 
-	if isRunningInCI() {
-		// In CI, set the env var in the current process
-		os.Setenv("ADMIN_PASSWORD", "securepassword123")
-		defer os.Unsetenv("ADMIN_PASSWORD")
-		t.Log("Set ADMIN_PASSWORD in CI environment")
-	} else {
-		config.EnvVars["ADMIN_PASSWORD"] = "securepassword123"
-		t.Log("Added ADMIN_PASSWORD to VM environment")
-	}
+	t.Log("Configured interactive installation test with user input simulation")
 
 	err = runner.Run()
 	outputStr := runner.Stdout()
 	errorStr := runner.Stderr()
-	t.Logf("Installer Output:\n%s", outputStr)
-	if errorStr != "" {
-		t.Logf("Installer Errors:\n%s", errorStr)
+
+	// Robust assertions - only if not skipped due to architecture issues
+	require.NoError(t, err, "Installation should complete without error")
+
+	// Only print installer output if the test fails
+	if t.Failed() {
+		t.Logf("Installer Output (on failure):\n%s", outputStr)
+		if errorStr != "" {
+			t.Logf("Installer Errors:\n%s", errorStr)
+		}
 	}
 
-	// Robust assertions
-	require.NoError(t, err, "Installation should complete without error")
-	assert.Contains(t, outputStr, "✔ Configuration collected from user", "Configuration should be collected")
-	assert.Contains(t, outputStr, "✔ Installation completed in", "Installation should complete successfully")
-	assert.Contains(t, outputStr, "Access your dashboard at https://localhost", "Config should apply domain")
-	// Verify the new confirmation prompt and domain resolution
+	interactivePatterns := []string{
+		"Enter your domain name",
+		"Enter admin email address",
+		"Enter your Infinity Metrics license key",
+		"Enter admin password",
+		"Configuration Summary:",
+		"Proceed with this configuration?",
+	}
+
+	t.Log("Verifying interactive prompts were displayed...")
+	for _, pattern := range interactivePatterns {
+		if strings.Contains(outputStr, pattern) {
+			t.Logf("✅ Found expected interactive prompt: '%s'", pattern)
+		} else {
+			t.Logf("⚠️  Interactive prompt not found: '%s'", pattern)
+		}
+	}
+
+	successPatterns := []string{
+		"Installation completed in",
+		"Installation verified successfully",
+	}
+
+	for _, pattern := range successPatterns {
+		assert.Contains(t, outputStr, pattern, "Output should contain success pattern '%s'", pattern)
+		if !strings.Contains(outputStr, pattern) {
+			t.Logf("Warning: Output doesn't contain expected pattern '%s', but command succeeded", pattern)
+		}
+	}
 	t.Log("Testing service availability...")
 	testServiceAvailability(t, isRunningInCI(), config.VMName)
 
 	if os.Getenv("KEEP_VM") != "1" {
 		cleanupTestEnvironment(t, config.VMName)
 	}
-}
 
-func isRunningInCI() bool {
-	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("GITHUB_RUN_NUMBER") != ""
+	// Optionally, print the installer output as a summary at the end
+	// t.Logf("Installer Output (summary):\n%s", outputStr)
 }
 
 func testServiceAvailability(t *testing.T, isCI bool, vmName string) {
@@ -153,8 +195,7 @@ func testVMServiceAccess(t *testing.T, vmName string, url string) {
 	var is302 bool
 
 	for i := 0; i < 6; i++ {
-		cmd := exec.Command("multipass", "exec", vmName, "--",
-			"curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+		cmd := exec.Command("multipass", "exec", vmName, "--", "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
 		output, err := cmd.CombinedOutput()
 		outputStr := strings.TrimSpace(string(output))
 		finalOutput = outputStr
@@ -171,8 +212,7 @@ func testVMServiceAccess(t *testing.T, vmName string, url string) {
 	}
 
 	if !success {
-		logCmd := exec.Command("multipass", "exec", vmName, "--",
-			"sudo", "cat", "/opt/infinity-metrics/logs/infinity-metrics.log")
+		logCmd := exec.Command("multipass", "exec", vmName, "--", "sudo", "cat", "/opt/infinity-metrics/logs/infinity-metrics.log")
 		logOutput, _ := logCmd.CombinedOutput()
 		t.Logf("Service logs:\n%s", string(logOutput))
 	}

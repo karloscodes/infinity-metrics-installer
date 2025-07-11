@@ -35,12 +35,10 @@ func newManagerWithExecutor(logger *logging.Logger, exec dockerExecutor) *Manage
 
 // CreateAdminUser creates the initial admin user inside the container.
 func (m *Manager) CreateAdminUser(email, password string) error {
-	m.logger.InfoWithTime("Creating admin user %s", email)
 	err := m.docker.ExecuteCommand("/app/imctl", "create-admin-user", email, password)
 	if err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
-	m.logger.Success("Admin user created: %s", email)
 	return nil
 }
 

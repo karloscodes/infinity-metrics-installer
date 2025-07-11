@@ -47,9 +47,9 @@ func (m *Manager) SetupCronJob() error {
 	}
 
 	// Create a more robust cron job with better environment setup
-	cronContent := fmt.Sprintf("# Infinity Metrics automated updates\n")
-	cronContent += fmt.Sprintf("SHELL=/bin/bash\n")
-	cronContent += fmt.Sprintf("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
+	cronContent := "# Infinity Metrics automated updates\n"
+	cronContent += "SHELL=/bin/bash\n"
+	cronContent += "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
 	cronContent += fmt.Sprintf("INSTALL_DIR=%s\n", m.installDir)
 	cronContent += fmt.Sprintf("%s root cd %s && %s update > %s/logs/updater.log 2>&1\n",
 		m.schedule,

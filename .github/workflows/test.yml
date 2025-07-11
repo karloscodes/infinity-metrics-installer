@@ -1,0 +1,72 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.24"
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod tidy
+
+      - name: Run unit tests
+        run: make test-unit
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # Limit total job time
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.22"
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod tidy
+
+      - name: Run integration tests
+        run: make test-integration
+
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          echo "Collecting Docker container logs for debugging..."
+          docker ps -a
+          for c in $(docker ps -aq); do
+            echo "\n===== Logs for container $c ====="
+            docker logs $c || true
+          done
+          echo "\n===== End of Docker logs ====="
+  # lint:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v4
+  #       with:
+  #         go-version: '1.22'
+
+  #     - name: Run golangci-lint
+  #       uses: golangci/golangci-lint-action@v3
+  #       with:
+  #         version: latest
+  #         args: --timeout=5m

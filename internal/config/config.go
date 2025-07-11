@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -25,17 +26,18 @@ const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
-	Domain        string // Local: User-provided
-	AdminEmail    string // Local: User-provided
-	LicenseKey    string // Local: User-provided
-	AdminPassword string // Local: User-provided, held in memory only
-	AppImage      string // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage    string // GitHub Release/Default: e.g., "caddy:2.7-alpine"
-	InstallDir    string // Default: e.g., "/opt/infinity-metrics"
-	BackupPath    string // Default: SQLite backup location
-	PrivateKey    string // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
-	Version       string // GitHub Release: Version of the infinity-metrics binary (optional)
-	InstallerURL  string // GitHub Release: URL to download new infinity-metrics binary
+	Domain        string   // Local: User-provided
+	AdminEmail    string   // Local: User-provided
+	LicenseKey    string   // Local: User-provided
+	AdminPassword string   // Local: User-provided, held in memory only
+	AppImage      string   // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage    string   // GitHub Release/Default: e.g., "caddy:2.7-alpine"
+	InstallDir    string   // Default: e.g., "/opt/infinity-metrics"
+	BackupPath    string   // Default: SQLite backup location
+	PrivateKey    string   // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
+	Version       string   // GitHub Release: Version of the infinity-metrics binary (optional)
+	InstallerURL  string   // GitHub Release: URL to download new infinity-metrics binary
+	DNSWarnings   []string // DNS configuration warnings
 }
 
 // Config manages configuration
@@ -64,16 +66,131 @@ func NewConfig(logger *logging.Logger) *Config {
 	}
 }
 
+// Helper function to get the current server's primary public IP address
+func getCurrentServerIP() (string, error) {
+	// Try to get IPs from multiple external services for better reliability
+	externalServices := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+
+	var publicIPs []string
+
+	// Try external services first
+	for _, service := range externalServices {
+		resp, err := http.Get(service)
+		if err == nil {
+			defer resp.Body.Close()
+			ip, err := io.ReadAll(resp.Body)
+			if err == nil && len(ip) > 0 {
+				publicIP := strings.TrimSpace(string(ip))
+				publicIPs = append(publicIPs, publicIP)
+				break // We got a valid IP, no need to try other services
+			}
+		}
+	}
+
+	// Also collect all local interface IPs
+	var localIPs []string
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// If we have at least one public IP from external services, return that
+		if len(publicIPs) > 0 {
+			return publicIPs[0], nil
+		}
+		return "", err
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback and interfaces that are down
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip loopback addresses
+			if ip.IsLoopback() {
+				continue
+			}
+
+			// Only consider IPv4 addresses for simplicity
+			if ip4 := ip.To4(); ip4 != nil {
+				localIPs = append(localIPs, ip4.String())
+			}
+		}
+	}
+
+	// Return results
+	if len(publicIPs) > 0 {
+		return publicIPs[0], nil
+	}
+
+	if len(localIPs) > 0 {
+		return strings.Join(localIPs, ","), nil
+	}
+
+	return "", fmt.Errorf("unable to determine server IP")
+}
+
+// Helper function to check domain against multiple IPs
+func checkDomainIPMatch(domain string, serverIPs string) (bool, string) {
+	ips, err := net.LookupIP(domain)
+	if err != nil || len(ips) == 0 {
+		return false, ""
+	}
+
+	// Convert comma-separated IPs to slice
+	serverIPList := strings.Split(serverIPs, ",")
+
+	var domainIPStrings []string
+	for _, ip := range ips {
+		ipStr := ip.String()
+		domainIPStrings = append(domainIPStrings, ipStr)
+
+		// Check if this domain IP matches any server IP
+		for _, serverIP := range serverIPList {
+			if ipStr == serverIP {
+				return true, ipStr
+			}
+		}
+	}
+
+	// No match found, return false and the domain IPs
+	return false, strings.Join(domainIPStrings, ", ")
+}
+
 // CollectFromUser gets required user input upfront
 func (c *Config) CollectFromUser(reader *bufio.Reader) error {
-	for {
-		c.data.Domain = ""
-		c.data.AdminEmail = ""
-		c.data.LicenseKey = ""
-		c.data.AdminPassword = ""
-		c.data.InstallDir = "/opt/infinity-metrics"
+	// Check if we're in non-interactive mode
+	if os.Getenv("NONINTERACTIVE") == "1" {
+		return c.collectFromEnvironment()
+	}
 
-		fmt.Print("Enter your domain name (e.g., analytics.example.com). A/AAAA records must be set at this point to autoconfigure SSL: ")
+	// Initialize default values
+	c.data.Domain = ""
+	c.data.AdminEmail = ""
+	c.data.LicenseKey = ""
+	c.data.AdminPassword = ""
+	c.data.InstallDir = "/opt/infinity-metrics"
+
+	// Collect domain
+	for {
+		fmt.Print("Enter your domain name (e.g., analytics.example.com): ")
 		domain, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read domain: %w", err)
@@ -83,20 +200,14 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: Domain cannot be empty.")
 			continue
 		}
+		break
+	}
 
-		ips, err := net.LookupIP(c.data.Domain)
-		if err != nil {
-			fmt.Printf("Error: Invalid domain: %v\n", err)
-			continue
-		}
-		if len(ips) == 0 {
-			fmt.Println("Error: No A/AAAA records found for the provided domain. Please set up the DNS records and try again.")
-			fmt.Println("Note:")
-			fmt.Println("DNS propagation may take from a few minutes to hours to complete.")
-			fmt.Println("You can check the DNS records at https://mxtoolbox.com/SuperTool.aspx or https://dnschecker.org/")
-			continue
-		}
+	// Check DNS records and store warnings instead of blocking
+	c.CheckDNSAndStoreWarnings(c.data.Domain)
 
+	// Collect admin email
+	for {
 		fmt.Print("Enter admin email address: ")
 		adminEmail, err := reader.ReadString('\n')
 		if err != nil {
@@ -113,7 +224,11 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: Invalid email address. Please enter a valid email (e.g., user@example.com).")
 			continue
 		}
+		break
+	}
 
+	// Collect license key
+	for {
 		fmt.Print("Enter your Infinity Metrics license key: ")
 		licenseKey, err := reader.ReadString('\n')
 		if err != nil {
@@ -124,51 +239,55 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: License key cannot be empty.")
 			continue
 		}
+		break
+	}
 
-		adminPassword := os.Getenv("ADMIN_PASSWORD")
-		if adminPassword != "" {
-			c.data.AdminPassword = adminPassword
-			c.logger.Info("Using admin password from environment variable")
-		} else {
-			for {
-				fmt.Print("Enter admin password (minimum 8 characters): ")
-				passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
-				if err != nil {
-					return fmt.Errorf("failed to read password: %w", err)
-				}
-				fmt.Println()
-
-				c.data.AdminPassword = strings.TrimSpace(string(passwordBytes))
-				if c.data.AdminPassword == "" {
-					fmt.Println("Error: Password cannot be empty.")
-					continue
-				}
-				if len(c.data.AdminPassword) < 8 {
-					fmt.Println("Error: Password must be at least 8 characters long.")
-					continue
-				}
-
-				fmt.Print("Confirm admin password: ")
-				confirmPasswordBytes, err := term.ReadPassword(int(syscall.Stdin))
-				if err != nil {
-					return fmt.Errorf("failed to read confirmation password: %w", err)
-				}
-				fmt.Println()
-
-				confirmPassword := strings.TrimSpace(string(confirmPasswordBytes))
-				if c.data.AdminPassword != confirmPassword {
-					fmt.Println("Error: Passwords do not match. Please try again.")
-					continue
-				}
-				break
+	// Collect admin password
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword != "" {
+		c.data.AdminPassword = adminPassword
+		c.logger.Info("Using admin password from environment variable")
+	} else {
+		for {
+			password, err := c.readPassword(reader, "Enter admin password (minimum 8 characters): ")
+			if err != nil {
+				return fmt.Errorf("failed to read password: %w", err)
 			}
+
+			c.data.AdminPassword = password
+			if c.data.AdminPassword == "" {
+				fmt.Println("Error: Password cannot be empty.")
+				continue
+			}
+			if len(c.data.AdminPassword) < 8 {
+				fmt.Println("Error: Password must be at least 8 characters long.")
+				continue
+			}
+
+			confirmPassword, err := c.readPassword(reader, "Confirm admin password: ")
+			if err != nil {
+				return fmt.Errorf("failed to read confirmation password: %w", err)
+			}
+
+			if c.data.AdminPassword != confirmPassword {
+				fmt.Println("Error: Passwords do not match. Please try again.")
+				continue
+			}
+			break
 		}
+	}
 
-		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+	c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
+	// Show configuration summary and get confirmation
+	for {
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
-		fmt.Printf("%s => %s\n", c.data.Domain, ips)
+		if c.HasDNSWarnings() {
+			fmt.Printf("DNS Status: ⚠️  Warnings detected (installation will continue)\n")
+		} else {
+			fmt.Printf("DNS Status: ✅ Verified\n")
+		}
 		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
 		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
 		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
@@ -186,10 +305,72 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		}
 
 		fmt.Println("Configuration declined. Let's start over.")
+		// Reset all values and start over
+		c.data.Domain = ""
+		c.data.AdminEmail = ""
+		c.data.LicenseKey = ""
+		c.data.AdminPassword = ""
+		return c.CollectFromUser(reader)
 	}
 
 	c.logger.Success("Configuration collected from user")
 	return nil
+}
+
+// collectFromEnvironment reads configuration from environment variables
+func (c *Config) collectFromEnvironment() error {
+	c.logger.Info("Running in non-interactive mode, reading configuration from environment variables")
+
+	// Read domain from environment
+	domain := os.Getenv("DOMAIN")
+	if domain == "" {
+		return fmt.Errorf("DOMAIN environment variable is required in non-interactive mode")
+	}
+	c.data.Domain = domain
+
+	// Read admin email from environment
+	adminEmail := os.Getenv("ADMIN_EMAIL")
+	if adminEmail == "" {
+		return fmt.Errorf("ADMIN_EMAIL environment variable is required in non-interactive mode")
+	}
+	c.data.AdminEmail = adminEmail
+
+	// Read license key from environment
+	licenseKey := os.Getenv("LICENSE_KEY")
+	if licenseKey == "" {
+		return fmt.Errorf("LICENSE_KEY environment variable is required in non-interactive mode")
+	}
+	c.data.LicenseKey = licenseKey
+
+	// Read admin password from environment
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword == "" {
+		return fmt.Errorf("ADMIN_PASSWORD environment variable is required in non-interactive mode")
+	}
+	c.data.AdminPassword = adminPassword
+
+	c.logger.Info("Configuration loaded from environment variables:")
+	c.logger.Info("  Domain: %s", c.data.Domain)
+	c.logger.Info("  Admin Email: %s", c.data.AdminEmail)
+	c.logger.Info("  License Key: %s", c.data.LicenseKey)
+	c.logger.Info("  Admin Password: [HIDDEN]")
+
+	// Set default values for other fields
+	c.data.InstallDir = "/opt/infinity-metrics"
+	c.data.BackupPath = filepath.Join(c.data.InstallDir, "backups")
+	c.data.AppImage = "karloscodes/infinity-metrics-beta:latest"
+	c.data.CaddyImage = "caddy:2.7-alpine"
+
+	return nil
+}
+
+// Helper function to format IPs for display
+func formatIPs(ips []net.IP) string {
+	ipStrings := make([]string, len(ips))
+	for i, ip := range ips {
+		ipStrings[i] = ip.String()
+	}
+	return strings.Join(ipStrings, ", ")
 }
 
 // LoadFromFile loads local config from .env
@@ -289,8 +470,193 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
 	fmt.Fprintf(file, "INFINITY_METRICS_PRIVATE_KEY=%s\n", c.data.PrivateKey)
 
-	c.logger.Success("Configuration saved to %s", filename)
+	c.logger.Info("Configuration saved to %s", filename)
 	return nil
+}
+
+// GetData returns the config data
+func (c *Config) GetData() ConfigData {
+	return c.data
+}
+
+// SetCaddyImage sets the CaddyImage field in ConfigData
+func (c *Config) SetCaddyImage(image string) {
+	c.data.CaddyImage = image
+	c.logger.Info("CaddyImage updated to: %s", image)
+}
+
+// DockerImages contains both app and caddy image information
+type DockerImages struct {
+	AppImage   string
+	CaddyImage string
+}
+
+// GetDockerImages returns both Docker images in a structured way
+func (c *Config) GetDockerImages() DockerImages {
+	return DockerImages{
+		AppImage:   c.data.AppImage,
+		CaddyImage: c.data.CaddyImage,
+	}
+}
+
+// SetInstallDir sets the InstallDir field in ConfigData
+func (c *Config) SetInstallDir(dir string) {
+	c.data.InstallDir = dir
+}
+
+// SetInstallerURL sets the InstallerURL field in ConfigData
+func (c *Config) SetInstallerURL(url string) {
+	c.data.InstallerURL = url
+}
+
+// GetMainDBPath returns the main database path
+func (c *Config) GetMainDBPath() string {
+	return filepath.Join(c.data.InstallDir, "storage", "infinity-metrics-production.db")
+}
+
+// Validate checks required fields
+func (c *Config) Validate() error {
+	if c.data.Domain == "" {
+		return fmt.Errorf("domain is required")
+	}
+	if c.data.AdminEmail == "" {
+		return fmt.Errorf("admin email is required")
+	}
+	if c.data.LicenseKey == "" {
+		return fmt.Errorf("license key is required")
+	}
+	if c.data.AdminPassword == "" {
+		return fmt.Errorf("password is required")
+	}
+	if c.data.AppImage == "" {
+		return fmt.Errorf("app image is required")
+	}
+	if c.data.CaddyImage == "" {
+		return fmt.Errorf("caddy image is required")
+	}
+	if c.data.InstallDir == "" {
+		return fmt.Errorf("install directory is required")
+	}
+	if c.data.BackupPath == "" {
+		return fmt.Errorf("backup path is required")
+	}
+	if c.data.PrivateKey == "" {
+		return fmt.Errorf("private key is required")
+	}
+	return nil
+}
+
+// CheckDNSAndStoreWarnings checks DNS configuration and stores warnings instead of blocking
+func (c *Config) CheckDNSAndStoreWarnings(domain string) {
+	fmt.Printf("🔍 Checking DNS configuration for %s...\n", domain)
+
+	// Clear any existing warnings
+	c.data.DNSWarnings = []string{}
+
+	ips, err := net.LookupIP(domain)
+	if err != nil {
+		warning := fmt.Sprintf("DNS lookup failed for %s: %v", domain, err)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Suggestion: Check that your domain is registered and DNS is configured correctly")
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Suggestion: Verify your DNS records using https://dnschecker.org/")
+		return
+	}
+
+	if len(ips) == 0 {
+		warning := "No A/AAAA records found for domain " + domain
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "DNS propagation may take from a few minutes to hours to complete")
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "You can check DNS records at https://mxtoolbox.com/SuperTool.aspx")
+		return
+	}
+
+	// Check if domain resolves to server IP
+	serverIPs, err := getCurrentServerIP()
+	if err != nil {
+		warning := fmt.Sprintf("Could not determine server IP addresses: %v", err)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+		c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Domain %s resolves to: %s", domain, formatIPs(ips)))
+		c.data.DNSWarnings = append(c.data.DNSWarnings, "Please verify manually that one of these IPs matches this server")
+	} else {
+		match, matchedIP := checkDomainIPMatch(domain, serverIPs)
+		if !match {
+			warning := fmt.Sprintf("Domain %s does not resolve to this server", domain)
+			c.data.DNSWarnings = append(c.data.DNSWarnings, warning)
+			c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Server IP(s): %s", serverIPs))
+			c.data.DNSWarnings = append(c.data.DNSWarnings, fmt.Sprintf("Domain resolves to: %s", formatIPs(ips)))
+			c.data.DNSWarnings = append(c.data.DNSWarnings, "Update your domain's DNS records to point to this server's IP")
+		} else {
+			fmt.Printf("✅ DNS configuration verified: %s resolves to server IP %s\n", domain, matchedIP)
+		}
+	}
+
+	// Display warnings if any exist
+	if len(c.data.DNSWarnings) > 0 {
+		c.displayDNSWarnings()
+	}
+}
+
+// displayDNSWarnings shows DNS configuration warnings to the user
+func (c *Config) displayDNSWarnings() {
+	fmt.Println("\n⚠️  DNS Configuration Warnings:")
+	for _, warning := range c.data.DNSWarnings {
+		if strings.HasPrefix(warning, "Suggestion:") {
+			fmt.Printf("   💡 %s\n", warning[11:]) // Remove "Suggestion:" prefix
+		} else {
+			fmt.Printf("   • %s\n", warning)
+		}
+	}
+	fmt.Printf("\n📋 Installation will continue, but you may need to fix DNS issues for external access.\n\n")
+}
+
+// GetDNSWarnings returns the current DNS warnings
+func (c *Config) GetDNSWarnings() []string {
+	return c.data.DNSWarnings
+}
+
+// HasDNSWarnings returns true if there are DNS configuration warnings
+func (c *Config) HasDNSWarnings() bool {
+	return len(c.data.DNSWarnings) > 0
+}
+
+// generatePrivateKey generates a secure random private key
+func generatePrivateKey() (string, error) {
+	key := make([]byte, 16)
+	_, err := rand.Read(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate private key: %w", err)
+	}
+	return hex.EncodeToString(key), nil
+}
+
+// readPassword reads a password from either terminal or stdin based on environment
+func (c *Config) readPassword(reader *bufio.Reader, prompt string) (string, error) {
+	fmt.Print(prompt)
+
+	var passwordBytes []byte
+	var err error
+
+	// In test environment, read password from stdin instead of terminal
+	if os.Getenv("ENV") == "test" {
+		password, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			err = readErr
+		} else {
+			passwordBytes = []byte(strings.TrimSpace(password))
+		}
+	} else {
+		passwordBytes, err = term.ReadPassword(int(syscall.Stdin))
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+
+	if os.Getenv("ENV") != "test" {
+		fmt.Println() // Only add newline for terminal mode
+	}
+
+	return strings.TrimSpace(string(passwordBytes)), nil
 }
 
 // FetchFromServer fetches config from the latest GitHub release
@@ -387,86 +753,4 @@ func (c *Config) fetchConfigJSON(url string) error {
 
 	c.logger.Success("Applied config.json from release")
 	return nil
-}
-
-// GetData returns the config data
-func (c *Config) GetData() ConfigData {
-	return c.data
-}
-
-// SetCaddyImage sets the CaddyImage field in ConfigData
-func (c *Config) SetCaddyImage(image string) {
-	c.data.CaddyImage = image
-	c.logger.Info("CaddyImage updated to: %s", image)
-}
-
-// DockerImages contains both app and caddy image information
-type DockerImages struct {
-	AppImage   string
-	CaddyImage string
-}
-
-// GetDockerImages returns both Docker images in a structured way
-func (c *Config) GetDockerImages() DockerImages {
-	return DockerImages{
-		AppImage:   c.data.AppImage,
-		CaddyImage: c.data.CaddyImage,
-	}
-}
-
-// SetInstallDir sets the InstallDir field in ConfigData
-func (c *Config) SetInstallDir(dir string) {
-	c.data.InstallDir = dir
-}
-
-// SetInstallerURL sets the InstallerURL field in ConfigData
-func (c *Config) SetInstallerURL(url string) {
-	c.data.InstallerURL = url
-}
-
-// GetMainDBPath returns the main database path
-func (c *Config) GetMainDBPath() string {
-	return filepath.Join(c.data.InstallDir, "storage", "infinity-metrics-production.db")
-}
-
-// Validate checks required fields
-func (c *Config) Validate() error {
-	if c.data.Domain == "" {
-		return fmt.Errorf("domain is required")
-	}
-	if c.data.AdminEmail == "" {
-		return fmt.Errorf("admin email is required")
-	}
-	if c.data.LicenseKey == "" {
-		return fmt.Errorf("license key is required")
-	}
-	if c.data.AdminPassword == "" {
-		return fmt.Errorf("password is required")
-	}
-	if c.data.AppImage == "" {
-		return fmt.Errorf("app image is required")
-	}
-	if c.data.CaddyImage == "" {
-		return fmt.Errorf("caddy image is required")
-	}
-	if c.data.InstallDir == "" {
-		return fmt.Errorf("install directory is required")
-	}
-	if c.data.BackupPath == "" {
-		return fmt.Errorf("backup path is required")
-	}
-	if c.data.PrivateKey == "" {
-		return fmt.Errorf("private key is required")
-	}
-	return nil
-}
-
-// generatePrivateKey generates a secure random private key
-func generatePrivateKey() (string, error) {
-	key := make([]byte, 16)
-	_, err := rand.Read(key)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate private key: %w", err)
-	}
-	return hex.EncodeToString(key), nil
 }

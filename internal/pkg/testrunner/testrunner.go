@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ type Config struct {
 	Debug          bool
 	VMName         string   // Only used for local environment
 	MultipassFlags []string // Only used for local environment
+	DirectRun      bool     // If true, run directly without VM even in local environment
 }
 
 // DefaultConfig returns a Config with default values
@@ -72,7 +74,9 @@ func NewTestRunner(config Config) *TestRunner {
 	}
 }
 
-// Run executes the command
+// Run executes the command in the appropriate environment.
+// - In CI, runs the binary directly on the host (see runInCI).
+// - Otherwise, runs the binary inside a fresh Multipass VM (see runInVM).
 func (r *TestRunner) Run() error {
 	r.logf("Starting test in %s environment", r.env)
 	r.logf("Binary path: %s", r.Config.BinaryPath)
@@ -81,7 +85,7 @@ func (r *TestRunner) Run() error {
 	if r.env == CIEnvironment {
 		return r.runInCI()
 	} else {
-		return r.runLocally()
+		return r.runInVM()
 	}
 }
 
@@ -89,15 +93,11 @@ func (r *TestRunner) Run() error {
 func (r *TestRunner) runInCI() error {
 	r.logf("Running directly in CI environment")
 
-	// Create the command
 	cmd := exec.Command(r.Config.BinaryPath, r.Config.Args...)
-
-	// Setup input/output
 	cmd.Stdin = strings.NewReader(r.Config.StdinInput)
 	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
 	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
 
-	// Set environment variables
 	cmd.Env = os.Environ()
 	for k, v := range r.Config.EnvVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
@@ -109,12 +109,12 @@ func (r *TestRunner) runInCI() error {
 
 	r.logf("Executing command: %s %s", cmd.Path, strings.Join(cmd.Args[1:], " "))
 
-	// Run with timeout
 	return r.runWithTimeout(cmd)
 }
 
-// runLocally runs the command in a multipass VM
-func (r *TestRunner) runLocally() error {
+// runInVM provisions a fresh Multipass VM, copies the binary, and runs the installer inside the VM.
+// This simulates a real user/server environment and tests the full install process, including system-level effects.
+func (r *TestRunner) runInVM() error {
 	r.logf("Running in local environment with Multipass VM")
 
 	// Check for multipass availability
@@ -127,9 +127,35 @@ func (r *TestRunner) runLocally() error {
 	cleanCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
 	cleanCmd.Run() // Ignore errors
 
-	// Create VM
-	r.logf("Creating new VM: %s", r.Config.VMName)
-	args := []string{"launch", "22.04", "--name", r.Config.VMName}
+	// Prepare cloud-init with SSH key for VM access
+	sshKeyPath := os.Getenv("SSH_KEY_PATH")
+	if sshKeyPath == "" {
+		sshKeyPath = filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519.pub")
+	}
+	// If the SSH public key does not exist, generate a new Ed25519 key pair
+	if _, err := os.Stat(sshKeyPath); os.IsNotExist(err) {
+		privateKeyPath := strings.TrimSuffix(sshKeyPath, ".pub")
+		r.logf("SSH public key not found at %s, generating new Ed25519 key pair...", sshKeyPath)
+		cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", privateKeyPath, "-N", "")
+		cmd.Stdout = r.Logger
+		cmd.Stderr = r.Logger
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to generate SSH key pair: %w", err)
+		}
+	}
+	pubKeyBytes, err := os.ReadFile(sshKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read SSH public key (%s): %w", sshKeyPath, err)
+	}
+	cloudInit := fmt.Sprintf(`#cloud-config\nusers:\n  - default\n  - name: ubuntu\n    ssh_authorized_keys:\n      - %s\n`, strings.TrimSpace(string(pubKeyBytes)))
+	cloudInitPath := filepath.Join(os.TempDir(), "cloud-init.yaml")
+	if err := os.WriteFile(cloudInitPath, []byte(cloudInit), 0o644); err != nil {
+		return fmt.Errorf("failed to write cloud-init file: %w", err)
+	}
+
+	// Create new VM with cloud-init and any extra flags
+	r.logf("Creating new VM: %s with cloud-init", r.Config.VMName)
+	args := []string{"launch", "22.04", "--name", r.Config.VMName, "--cpus", "2", "--memory", "2G", "--disk", "10G", "--cloud-init", cloudInitPath}
 	args = append(args, r.Config.MultipassFlags...)
 
 	launchCmd := exec.Command("multipass", args...)
@@ -142,10 +168,10 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to launch VM: %w", err)
 	}
 
-	// Wait for VM to be ready
+	// Wait for the VM to be ready for SSH/SCP
 	r.logf("Waiting for VM to be ready")
 	vmReady := false
-	for i := 0; i < 60; i++ { // Give up to 60 seconds
+	for i := 0; i < 60; i++ {
 		cmd := exec.Command("multipass", "info", r.Config.VMName)
 		output, err := cmd.CombinedOutput()
 		outputStr := string(output)
@@ -163,16 +189,13 @@ func (r *TestRunner) runLocally() error {
 	}
 
 	if !vmReady {
-		// Get detailed info about the VM for debugging
 		infoCmd := exec.Command("multipass", "info", r.Config.VMName, "--format", "yaml")
 		infoOutput, _ := infoCmd.CombinedOutput()
 		r.logf("Detailed VM info: \n%s", string(infoOutput))
 
-		// Try one more time with a different string check to be sure
 		finalCheckCmd := exec.Command("multipass", "list")
 		finalOutput, _ := finalCheckCmd.CombinedOutput()
-		if strings.Contains(string(finalOutput), r.Config.VMName) &&
-			strings.Contains(string(finalOutput), "Running") {
+		if strings.Contains(string(finalOutput), r.Config.VMName) && strings.Contains(string(finalOutput), "Running") {
 			r.logf("VM appears to be ready based on 'multipass list' output")
 			vmReady = true
 		} else {
@@ -180,9 +203,9 @@ func (r *TestRunner) runLocally() error {
 		}
 	}
 
-	// Before running the installer command, set the ENV variable in the VM
+	// Set ENV variable in the VM
 	envSetCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c", "echo 'export ENV=test' >> /etc/environment")
-	envSetCmd.Run() // Run this before your installer command
+	envSetCmd.Run()
 
 	// Copy binary to VM
 	r.logf("Copying binary to VM")
@@ -194,7 +217,7 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to copy binary to VM: %w", err)
 	}
 
-	// Make binary executable and move to system location
+	// Make binary executable
 	r.logf("Making binary executable")
 	execCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "chmod", "+x", "/home/ubuntu/infinity-metrics")
 	execCmd.Stdout = r.Logger
@@ -213,14 +236,10 @@ func (r *TestRunner) runLocally() error {
 		return fmt.Errorf("failed to move binary: %w", err)
 	}
 
-	// Run the command in VM
-	r.logf("Running command in VM: infinity-metrics %s", strings.Join(r.Config.Args, " "))
-
 	// Set environment variables in the VM before running the command
 	for k, v := range r.Config.EnvVars {
 		r.logf("Setting environment variable in VM: %s=%s", k, v)
-		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c",
-			fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
+		envCmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "sudo", "sh", "-c", fmt.Sprintf("echo 'export %s=%s' >> /etc/environment", k, v))
 		envOutput, err := envCmd.CombinedOutput()
 		if err != nil {
 			r.logf("Failed to set environment variable %s: %v\nOutput: %s", k, err, string(envOutput))
@@ -236,16 +255,13 @@ func (r *TestRunner) runLocally() error {
 	cmd.Stdout = io.MultiWriter(&r.stdout, r.Logger)
 	cmd.Stderr = io.MultiWriter(&r.stderr, r.Logger)
 
-	// Set environment variables
 	cmd.Env = os.Environ()
 	for k, v := range r.Config.EnvVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// Run with timeout
-	err := r.runWithTimeout(cmd)
+	err = r.runWithTimeout(cmd)
 
-	// If configured to keep VM, don't delete it
 	if os.Getenv("KEEP_VM") != "1" {
 		r.logf("Cleaning up VM: %s", r.Config.VMName)
 		cleanupCmd := exec.Command("multipass", "delete", r.Config.VMName, "--purge")
@@ -255,6 +271,91 @@ func (r *TestRunner) runLocally() error {
 	}
 
 	return err
+}
+
+// GetVMIP returns the IPv4 address of the Multipass VM
+func (r *TestRunner) GetVMIP() (string, error) {
+	cmd := exec.Command("multipass", "info", r.Config.VMName)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "IPv4") {
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				return parts[1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("IP not found for VM %s", r.Config.VMName)
+}
+
+// RunMultipassCommand runs a shell command in the VM via multipass exec
+func (r *TestRunner) RunMultipassCommand(command string, useSudo bool) (string, error) {
+	args := []string{"exec", r.Config.VMName, "--"}
+	if useSudo {
+		args = append(args, "sudo")
+	}
+	args = append(args, "sh", "-c", command)
+	cmd := exec.Command("multipass", args...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// CopyFileToVM copies a file to the VM using multipass transfer
+func (r *TestRunner) CopyFileToVM(localPath, remotePath string) error {
+	cmd := exec.Command("multipass", "transfer", localPath, fmt.Sprintf("%s:%s", r.Config.VMName, remotePath))
+	return cmd.Run()
+}
+
+// Deprecated: Use CopyFileToVM for VM file copy in local mode
+func (r *TestRunner) CopyFileToVMOverSSH(localPath, remotePath string) error {
+	return fmt.Errorf("CopyFileToVMOverSSH is deprecated; use CopyFileToVM with multipass instead")
+}
+
+// Deprecated: Use RunMultipassCommand for VM command execution in local mode
+func (r *TestRunner) RunSSHCommand(command string) (string, error) {
+	return "", fmt.Errorf("RunSSHCommand is deprecated; use RunMultipassCommand with multipass instead")
+}
+
+// CheckServiceAvailability checks if the service is available at the given URL.
+// In VM mode, it uses multipass exec to curl from inside the VM. In direct mode, it curls locally.
+func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interface {
+	Logf(string, ...interface{})
+	Errorf(string, ...interface{})
+},
+) (success bool, is302 bool, finalOutput string) {
+	for i := 0; i < attempts; i++ {
+		var output string
+		var err error
+		if r.env == LocalEnvironment && !r.Config.DirectRun {
+			// VM mode: curl via multipass exec
+			cmd := exec.Command("multipass", "exec", r.Config.VMName, "--", "curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+			out, e := cmd.CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			err = e
+		} else {
+			// Direct mode: curl locally
+			cmd := exec.Command("curl", "-k", "-s", "-o", "/dev/null", "-w", "%{http_code}", url)
+			out, e := cmd.CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			err = e
+		}
+		outputStr := strings.TrimSpace(output)
+		finalOutput = outputStr
+		t.Logf("Service check attempt %d/%d, result: %s, error: %v", i+1, attempts, outputStr, err)
+		if err == nil && outputStr == "302" {
+			success = true
+			is302 = true
+			break
+		} else if err == nil && outputStr == "200" {
+			success = true
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return
 }
 
 // runWithTimeout runs a command with the configured timeout

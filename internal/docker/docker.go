@@ -589,3 +589,31 @@ func (d *Docker) containerExists(name string) bool {
 	out, err := d.RunCommand("ps", "-a", "-q", "-f", "name="+name)
 	return err == nil && strings.TrimSpace(out) != ""
 }
+
+// VerifyContainersRunning checks if the Infinity Metrics containers are running
+func (d *Docker) VerifyContainersRunning() (bool, error) {
+	// Check app container
+	appRunning, err := d.isContainerRunning("infinity-app")
+	if err != nil {
+		return false, fmt.Errorf("failed to check app container: %w", err)
+	}
+
+	// Check Caddy container
+	caddyRunning, err := d.isContainerRunning("infinity-caddy")
+	if err != nil {
+		return false, fmt.Errorf("failed to check Caddy container: %w", err)
+	}
+
+	return appRunning && caddyRunning, nil
+}
+
+// isContainerRunning checks if a specific container is running
+func (d *Docker) isContainerRunning(containerName string) (bool, error) {
+	cmd := exec.Command("docker", "ps", "--filter", "name="+containerName, "--format", "{{.Names}}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to check container status: %w", err)
+	}
+
+	return strings.Contains(string(output), containerName), nil
+}

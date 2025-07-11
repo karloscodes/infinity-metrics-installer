@@ -9,12 +9,19 @@ Infinity Metrics is a powerful, privacy-first, ai-powered web analytics platform
 - **Automated backups**: Built-in database backup scheduling
 - **Secure by default**: Automatic HTTPS certificate management
 
+
+## Installation
+
+```bash
+curl -fsSL https://getinfinitymetrics.com/install -o install.sh && sudo bash install.sh
+```
+
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
 
 ## Support
 
-- Documentation: [getinfinitymetrics.com](https://getinfinitymetrics.com)
+- InfinityMetrics: [getinfinitymetrics.com](https://getinfinitymetrics.com)
 - Issues: [GitHub Issues](https://github.com/karloscodes/infinity-metrics-installer/issues)
 
