@@ -58,6 +58,8 @@ func main() {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "version", "--version", "-v":
+		printVersion()
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -295,6 +297,10 @@ func runAdminPasswordChange(logger *logging.Logger) error {
 	return nil
 }
 
+func printVersion() {
+	fmt.Println(currentInstallerVersion)
+}
+
 func printUsage() {
 	fmt.Println("Usage: infinity-metrics [command]")
 	fmt.Println("\nCommands:")
@@ -303,5 +309,6 @@ func printUsage() {
 	fmt.Println("  reload                      Reload containers with latest .env config without backup")
 	fmt.Println("  restore                     Restore the database from last backup")
 	fmt.Println("  change-admin-password       Change the admin user password")
+	fmt.Println("  version                     Show version information")
 	fmt.Println("  help                        Show this help message")
 }
