@@ -696,15 +696,26 @@ func (c *Config) FetchFromServer(_ string) error {
 	}
 
 	var configURL string
-	binaryName := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
+	// Try new naming pattern first (infinity-metrics-installer)
+	binaryNameNew := fmt.Sprintf("infinity-metrics-installer-v%s-%s", version, runtime.GOARCH)
+	// Fallback to old naming pattern for backwards compatibility
+	binaryNameOld := fmt.Sprintf("infinity-metrics-v%s-%s", version, runtime.GOARCH)
 	var binaryURL string
+	var foundPattern string
 
 	for _, asset := range release.Assets {
 		switch asset.Name {
 		case "config.json":
 			configURL = asset.DownloadURL
-		case binaryName:
+		case binaryNameNew:
 			binaryURL = asset.DownloadURL
+			foundPattern = "new"
+		case binaryNameOld:
+			// Only use old pattern if new pattern wasn't found
+			if binaryURL == "" {
+				binaryURL = asset.DownloadURL
+				foundPattern = "old"
+			}
 		}
 	}
 
@@ -719,8 +730,11 @@ func (c *Config) FetchFromServer(_ string) error {
 	c.data.Version = version
 	if binaryURL != "" {
 		c.data.InstallerURL = binaryURL
+		if foundPattern != "" {
+			c.logger.Info("Found binary using %s naming pattern", foundPattern)
+		}
 	} else {
-		c.logger.Warn("Binary %s not found in latest release, keeping default URL", binaryName)
+		c.logger.Warn("Binary %s not found in latest release, keeping default URL", binaryNameNew)
 	}
 
 	c.logger.Success("Fetched configuration from GitHub release %s", release.TagName)

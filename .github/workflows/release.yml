@@ -73,6 +73,8 @@ jobs:
           gh release create "$TAG" \
             bin/infinity-metrics-v${{ env.VERSION }}-amd64 \
             bin/infinity-metrics-v${{ env.VERSION }}-arm64 \
+            bin/infinity-metrics-installer-v${{ env.VERSION }}-amd64 \
+            bin/infinity-metrics-installer-v${{ env.VERSION }}-arm64 \
             config/config.json \
             --title "Release v${{ env.VERSION }}" \
             --notes "Automated release with binaries and config.json for version ${{ env.VERSION }}" \

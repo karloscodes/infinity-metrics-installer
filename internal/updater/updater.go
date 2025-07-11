@@ -93,7 +93,23 @@ func (u *Updater) Run(currentVersion string) error {
 			if downloadURL == "" {
 				downloadURL = u.config.GetData().InstallerURL
 				if downloadURL == "" || downloadURL == fmt.Sprintf("https://github.com/%s/releases/latest", config.GithubRepo) {
-					downloadURL = fmt.Sprintf("https://github.com/%s/releases/download/v%s/infinity-metrics-v%s-%s", GitHubRepo, latestVersion, latestVersion, arch)
+					// Try new naming pattern first
+					downloadURL = fmt.Sprintf("https://github.com/%s/releases/download/v%s/infinity-metrics-installer-v%s-%s", GitHubRepo, latestVersion, latestVersion, arch)
+					u.logger.Info("Trying new naming pattern URL: %s", downloadURL)
+
+					// Test if the new pattern URL is accessible
+					client := &http.Client{Timeout: 10 * time.Second}
+					resp, err := client.Head(downloadURL)
+					if err != nil || resp.StatusCode != http.StatusOK {
+						// Fall back to old naming pattern
+						downloadURL = fmt.Sprintf("https://github.com/%s/releases/download/v%s/infinity-metrics-v%s-%s", GitHubRepo, latestVersion, latestVersion, arch)
+						u.logger.Info("New pattern not accessible, falling back to old naming pattern URL: %s", downloadURL)
+					} else {
+						u.logger.Info("Using new naming pattern URL: %s", downloadURL)
+					}
+					if resp != nil {
+						resp.Body.Close()
+					}
 				}
 			}
 
@@ -159,19 +175,39 @@ func (u *Updater) getLatestVersionAndBinaryURL() (string, string, error) {
 	}
 
 	arch := runtime.GOARCH
-	expectedAsset := fmt.Sprintf("infinity-metrics-v%s-%s", latestVersion, arch)
+	// Try new naming pattern first (infinity-metrics-installer)
+	expectedAssetNew := fmt.Sprintf("infinity-metrics-installer-v%s-%s", latestVersion, arch)
+	// Fallback to old naming pattern for backwards compatibility
+	expectedAssetOld := fmt.Sprintf("infinity-metrics-v%s-%s", latestVersion, arch)
+
 	var binaryURL string
+	var foundPattern string
+
+	// First try to find the new naming pattern
 	for _, asset := range release.Assets {
-		if asset.Name == expectedAsset {
+		if asset.Name == expectedAssetNew {
 			binaryURL = asset.BrowserURL
+			foundPattern = "new"
 			break
 		}
 	}
 
+	// If new pattern not found, try old pattern
 	if binaryURL == "" {
-		return latestVersion, "", fmt.Errorf("no binary found for architecture %s in release v%s", arch, latestVersion)
+		for _, asset := range release.Assets {
+			if asset.Name == expectedAssetOld {
+				binaryURL = asset.BrowserURL
+				foundPattern = "old"
+				break
+			}
+		}
 	}
 
+	if binaryURL == "" {
+		return latestVersion, "", fmt.Errorf("no binary found for architecture %s in release v%s (tried both %s and %s)", arch, latestVersion, expectedAssetNew, expectedAssetOld)
+	}
+
+	u.logger.Info("Found binary using %s naming pattern: %s", foundPattern, binaryURL)
 	return latestVersion, binaryURL, nil
 }
 
@@ -380,8 +416,16 @@ func compareVersions(v1, v2 string) int {
 func extractVersionFromURL(url string) string {
 	parts := strings.Split(url, "/")
 	for i, part := range parts {
-		if strings.HasPrefix(part, "infinity-metrics-v") && i < len(parts) {
+		if i < len(parts) {
 			filename := part
+			// Try new naming pattern first (infinity-metrics-installer)
+			if strings.HasPrefix(filename, "infinity-metrics-installer-v") {
+				version := strings.TrimPrefix(filename, "infinity-metrics-installer-v")
+				version = strings.TrimSuffix(version, "-amd64")
+				version = strings.TrimSuffix(version, "-arm64")
+				return version
+			}
+			// Fall back to old naming pattern for backwards compatibility
 			if strings.HasPrefix(filename, "infinity-metrics-v") {
 				version := strings.TrimPrefix(filename, "infinity-metrics-v")
 				version = strings.TrimSuffix(version, "-amd64")
