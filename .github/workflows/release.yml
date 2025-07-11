@@ -2,31 +2,31 @@ name: Infinity Metrics Installer Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   installer-tests:
     runs-on: ubuntu-latest
     permissions:
-      contents: write 
+      contents: write
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
-          
+          go-version: "1.24"
+
       - name: Install dependencies
         run: |
           go mod download
           go mod tidy
-      
+
       - name: Build installer
         run: make build-linux
-      
+
       - name: Prepare binary
         run: |
           # Use architecture-specific binary based on runner
@@ -37,14 +37,14 @@ jobs:
           fi
           chmod +x bin/infinity-metrics
           ls -la bin/
-      
+
       - name: Run all installer tests
         env:
           BINARY_PATH: ${{ github.workspace }}/bin/infinity-metrics
           DEBUG: 1
           LICENSE_KEY: ${{ secrets.LICENSE_KEY }}
         run: make test
-      
+
       - name: Collect logs on failure
         if: failure()
         run: |
@@ -54,18 +54,18 @@ jobs:
             echo "========== Logs for $container =========="
             docker logs $container || true
           done
-          
+
           echo "Collecting service logs..."
           ls -la /opt/infinity-metrics/logs/ || true
           cat /opt/infinity-metrics/logs/infinity-metrics.log || true
-          
+
       - name: Get version
         id: get_version
         run: |
           VERSION=$(cat .version | tr -d '\n')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "Version is: $VERSION"
-          
+
       - name: Create GitHub Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

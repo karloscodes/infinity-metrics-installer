@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 	"syscall"
@@ -15,6 +14,7 @@ import (
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
+	"infinity-metrics-installer/internal/requirements"
 	"infinity-metrics-installer/internal/updater"
 )
 
@@ -96,10 +96,39 @@ func initLogging() *logging.Logger {
 func runInstall(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
 	logger.Debug("Initializing installation environment")
 
+	// Welcome message with DNS information
+	fmt.Println("🚀 Welcome to Infinity Metrics Installer!")
+	fmt.Println()
+	fmt.Println("📋 System Requirements:")
+	fmt.Println("   • Ports 80 and 443 must be available (required for HTTP/HTTPS and SSL)")
+	fmt.Println("   • Root privileges (run with sudo)")
+	fmt.Println("   • Internet connection for downloading components")
+	fmt.Println()
+	fmt.Println("📋 DNS Configuration (Optional but Recommended):")
+	fmt.Println("   • If you set up A/AAAA DNS records for your domain BEFORE installation,")
+	fmt.Println("     the installer will automatically configure SSL certificates.")
+	fmt.Println("   • You can also configure DNS records later, but SSL setup won't be immediate.")
+	fmt.Println("   • The system will work either way - SSL will be configured automatically")
+	fmt.Println("     once DNS propagation is complete.")
+	fmt.Println()
+	fmt.Println("🔒 SSL Certificate Information:")
+	fmt.Println("   • SSL certificates are provided by Let's Encrypt with automatic renewal")
+	fmt.Println("   • If SSL setup fails initially, the system will automatically retry, adding some delays.")
+	fmt.Println("   • Let's Encrypt has rate limits to prevent abuse (see: https://letsencrypt.org/docs/rate-limits/)")
+	fmt.Println()
+
+	// System requirements check
+	checker := requirements.NewChecker(logger)
+	if err := checker.CheckSystemRequirements(); err != nil {
+		logger.Error("System requirements check failed: %v", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Please provide the required configuration details:")
+
 	// Create a bufio.Reader to read user input from stdin
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("Please provide the required configuration details:")
 	config := config.NewConfig(logger)
 	if err := config.CollectFromUser(reader); err != nil {
 		logger.Error("Failed to collect configuration: %v", err)
@@ -113,54 +142,57 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 		os.Exit(1)
 	}
 
-	elapsedTime := time.Since(startTime).Round(time.Second)
-	logger.Success("Installation completed in %s", elapsedTime)
-
-	// Verify the installation
+	// Verify the installation and check for warnings
 	logger.Info("Verifying installation...")
-	err = inst.VerifyInstallation()
-	if err != nil {
-		logger.Warn("Installation verification had issues: %v", err)
+	_, verifyErr := inst.VerifyInstallation()
+
+	if verifyErr != nil {
+		logger.Warn("Installation verification had issues: %v", verifyErr)
 		logger.Info("You may need to troubleshoot these issues before using Infinity Metrics")
 	} else {
 		logger.Success("Installation verified successfully")
 	}
 
-	data := inst.GetConfig().GetData()
-	logger.InfoWithTime("Access your dashboard at https://%s", data.Domain)
-	logger.Info("Login with your admin email: %s", data.AdminEmail)
-	logger.Info("First-time login steps:")
-	logger.Info("1. Confirm your organization name")
-	logger.Info("2. Set your time zone")
-	logger.Info("3. Choose your initial data sources to connect")
-
-	// Check ports 80 and 443
-	portCheck80 := checkPort(80)
-	portCheck443 := checkPort(443)
-
-	if !portCheck80 || !portCheck443 {
-		logger.Warn("Important: One or more required ports are not available:")
-		if !portCheck80 {
-			logger.Warn("- Port 80 is not available (required for HTTP)")
+	// DNS warnings (if any)
+	if inst.GetConfig().HasDNSWarnings() {
+		// Only print the DNS CONFIGURATION REQUIRED block here (summary), not earlier in the process
+		fmt.Println("\n\033[1m⚠️  DNS CONFIGURATION REQUIRED\033[0m")
+		fmt.Println(strings.Repeat("-", 40))
+		fmt.Println("The following DNS issues were detected during installation:")
+		for _, warning := range config.GetDNSWarnings() {
+			if strings.HasPrefix(warning, "Suggestion:") {
+				fmt.Printf("   💡 %s\n", warning[11:])
+			} else {
+				fmt.Printf("   • %s\n", warning)
+			}
 		}
-		if !portCheck443 {
-			logger.Warn("- Port 443 is not available (required for HTTPS)")
-		}
-		logger.Warn("This may prevent SSL certificate generation and web access to your installation.")
-		logger.Warn("Please ensure these ports are open in your firewall and not used by other services.")
+		fmt.Println("\n🛠️  NEXT STEPS:")
+		fmt.Printf("   1. You could set up A/AAA DNS records now to make automatic SSL work in the installation process. You can configure it later and the installer can work without it.\n")
+		data := inst.GetConfig().GetData()
+		fmt.Printf("   2. Configure DNS: Add A record for %s pointing to this server\n", data.Domain)
+		fmt.Println("   3. Wait for DNS propagation (up to 24 hours)")
+		fmt.Printf("   4. Test access: https://%s\n", data.Domain)
+		fmt.Println("   5. Monitor logs: docker logs infinity-caddy")
+		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
+		fmt.Println("📋 SSL setup might not be immediate due to Let's Encrypt retries.")
 	}
+
+	elapsedTime := time.Since(startTime).Round(time.Second)
+	logger.Success("Installation completed in %s", elapsedTime)
+
+	// Final success message with dashboard access information
+	fmt.Println()
+	fmt.Println("🎉 Installation Complete!")
+	fmt.Println("═══════════════════════════")
+	data := inst.GetConfig().GetData()
+	fmt.Printf("🌐 Dashboard URL: https://%s\n", data.Domain)
+	fmt.Printf("📧 Admin Email: %s\n", data.AdminEmail)
+	fmt.Printf("🔑 Use the password you set during installation to log in\n")
+	fmt.Println()
+	fmt.Println("🚀 Your Infinity Metrics installation is ready!")
+	fmt.Println("Thank you for choosing Infinity Metrics for your analytics needs.")
 
 	os.Stdout.Sync() // Force flush to ensure output is captured
-}
-
-// checkPort checks if a port is available
-func checkPort(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return false
-	}
-	ln.Close()
-	return true
 }
 
 func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {

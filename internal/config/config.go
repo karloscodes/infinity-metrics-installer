@@ -181,17 +181,16 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		return c.collectFromEnvironment()
 	}
 
-	// Regular collection with DNS validation for normal (non-test) mode
-	for {
-		c.data.Domain = ""
-		c.data.AdminEmail = ""
-		c.data.LicenseKey = ""
-		c.data.AdminPassword = ""
-		c.data.InstallDir = "/opt/infinity-metrics"
+	// Initialize default values
+	c.data.Domain = ""
+	c.data.AdminEmail = ""
+	c.data.LicenseKey = ""
+	c.data.AdminPassword = ""
+	c.data.InstallDir = "/opt/infinity-metrics"
 
+	// Collect domain
+	for {
 		fmt.Print("Enter your domain name (e.g., analytics.example.com): ")
-		fmt.Println("💡 Optional: Set up A/AAAA DNS records pointing to this server for automatic SSL.")
-		fmt.Println("   You can configure DNS later if needed - the installer will work without it.")
 		domain, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read domain: %w", err)
@@ -201,10 +200,14 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: Domain cannot be empty.")
 			continue
 		}
+		break
+	}
 
-		// Check DNS records and store warnings instead of blocking
-		c.CheckDNSAndStoreWarnings(c.data.Domain)
+	// Check DNS records and store warnings instead of blocking
+	c.CheckDNSAndStoreWarnings(c.data.Domain)
 
+	// Collect admin email
+	for {
 		fmt.Print("Enter admin email address: ")
 		adminEmail, err := reader.ReadString('\n')
 		if err != nil {
@@ -221,7 +224,11 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: Invalid email address. Please enter a valid email (e.g., user@example.com).")
 			continue
 		}
+		break
+	}
 
+	// Collect license key
+	for {
 		fmt.Print("Enter your Infinity Metrics license key: ")
 		licenseKey, err := reader.ReadString('\n')
 		if err != nil {
@@ -232,43 +239,48 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: License key cannot be empty.")
 			continue
 		}
+		break
+	}
 
-		adminPassword := os.Getenv("ADMIN_PASSWORD")
-		if adminPassword != "" {
-			c.data.AdminPassword = adminPassword
-			c.logger.Info("Using admin password from environment variable")
-		} else {
-			for {
-				password, err := c.readPassword(reader, "Enter admin password (minimum 8 characters): ")
-				if err != nil {
-					return fmt.Errorf("failed to read password: %w", err)
-				}
-
-				c.data.AdminPassword = password
-				if c.data.AdminPassword == "" {
-					fmt.Println("Error: Password cannot be empty.")
-					continue
-				}
-				if len(c.data.AdminPassword) < 8 {
-					fmt.Println("Error: Password must be at least 8 characters long.")
-					continue
-				}
-
-				confirmPassword, err := c.readPassword(reader, "Confirm admin password: ")
-				if err != nil {
-					return fmt.Errorf("failed to read confirmation password: %w", err)
-				}
-
-				if c.data.AdminPassword != confirmPassword {
-					fmt.Println("Error: Passwords do not match. Please try again.")
-					continue
-				}
-				break
+	// Collect admin password
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword != "" {
+		c.data.AdminPassword = adminPassword
+		c.logger.Info("Using admin password from environment variable")
+	} else {
+		for {
+			password, err := c.readPassword(reader, "Enter admin password (minimum 8 characters): ")
+			if err != nil {
+				return fmt.Errorf("failed to read password: %w", err)
 			}
+
+			c.data.AdminPassword = password
+			if c.data.AdminPassword == "" {
+				fmt.Println("Error: Password cannot be empty.")
+				continue
+			}
+			if len(c.data.AdminPassword) < 8 {
+				fmt.Println("Error: Password must be at least 8 characters long.")
+				continue
+			}
+
+			confirmPassword, err := c.readPassword(reader, "Confirm admin password: ")
+			if err != nil {
+				return fmt.Errorf("failed to read confirmation password: %w", err)
+			}
+
+			if c.data.AdminPassword != confirmPassword {
+				fmt.Println("Error: Passwords do not match. Please try again.")
+				continue
+			}
+			break
 		}
+	}
 
-		c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
+	c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
+	// Show configuration summary and get confirmation
+	for {
 		fmt.Println("\nConfiguration Summary:")
 		fmt.Printf("Domain: %s\n", c.data.Domain)
 		if c.HasDNSWarnings() {
@@ -293,6 +305,12 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		}
 
 		fmt.Println("Configuration declined. Let's start over.")
+		// Reset all values and start over
+		c.data.Domain = ""
+		c.data.AdminEmail = ""
+		c.data.LicenseKey = ""
+		c.data.AdminPassword = ""
+		return c.CollectFromUser(reader)
 	}
 
 	c.logger.Success("Configuration collected from user")

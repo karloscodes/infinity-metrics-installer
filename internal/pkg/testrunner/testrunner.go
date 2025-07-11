@@ -358,15 +358,6 @@ func (r *TestRunner) CheckServiceAvailability(url string, attempts int, t interf
 	return
 }
 
-// buildEnvExports creates export statements for environment variables
-func (r *TestRunner) buildEnvExports() string {
-	var exports []string
-	for k, v := range r.Config.EnvVars {
-		exports = append(exports, fmt.Sprintf("export %s='%s'", k, v))
-	}
-	return strings.Join(exports, "\n")
-}
-
 // runWithTimeout runs a command with the configured timeout
 func (r *TestRunner) runWithTimeout(cmd *exec.Cmd) error {
 	err := cmd.Start()

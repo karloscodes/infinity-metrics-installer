@@ -2,9 +2,9 @@ package installer
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"infinity-metrics-installer/internal/admin"
@@ -23,11 +23,12 @@ const (
 )
 
 type Installer struct {
-	logger     *logging.Logger
-	config     *config.Config
-	docker     *docker.Docker
-	database   *database.Database
-	binaryPath string
+	logger       *logging.Logger
+	config       *config.Config
+	docker       *docker.Docker
+	database     *database.Database
+	binaryPath   string
+	portWarnings []string
 }
 
 func NewInstaller(logger *logging.Logger) *Installer {
@@ -65,12 +66,11 @@ func (i *Installer) Run() error {
 	totalSteps := 6
 
 	i.logger.Info("Step 1/%d: Checking system privileges", totalSteps)
-	if os.Geteuid() != 0 && os.Getenv("ENV") != "test" {
-		return fmt.Errorf("this installer must be run as root")
-	}
+	// Step 1: Privilege check - already done in main, just confirm
 	i.logger.Success("Root privileges confirmed")
 
 	i.logger.Info("Step 2/%d: Setting up SQLite", totalSteps)
+	// Step 2: SQLite
 	i.logger.Info("Installing SQLite...")
 	if err := i.database.EnsureSQLiteInstalled(); err != nil {
 		i.logger.Error("SQLite installation failed: %v", err)
@@ -79,6 +79,7 @@ func (i *Installer) Run() error {
 	i.logger.Success("SQLite installed successfully")
 
 	i.logger.Info("Step 3/%d: Setting up Docker", totalSteps)
+	// Step 3: Docker
 	i.logger.Info("Installing Docker...")
 	// Show progress indicator for Docker installation
 	progressChan := make(chan int, 1)
@@ -93,6 +94,7 @@ func (i *Installer) Run() error {
 	i.logger.Success("Docker installed successfully")
 
 	i.logger.Info("Step 4/%d: Configuring Infinity Metrics", totalSteps)
+	// Step 4: Config
 	data := i.config.GetData()
 	if err := i.createInstallDir(data.InstallDir); err != nil {
 		return fmt.Errorf("failed to create install dir: %w", err)
@@ -122,6 +124,7 @@ func (i *Installer) Run() error {
 	i.logger.Success("Configuration validated and saved to %s", envFile)
 
 	i.logger.Info("Step 5/%d: Deploying Infinity Metrics", totalSteps)
+	// Step 5: Deploy
 	i.logger.Info("Deploying Docker containers...")
 	// Show progress indicator for deployment
 	deployProgressChan := make(chan int, 1)
@@ -136,21 +139,17 @@ func (i *Installer) Run() error {
 	i.logger.Success("Deployment completed")
 
 	i.logger.Info("Step 6/%d: Creating default admin user", totalSteps)
+	// Step 6: Admin user
 	if err := i.createDefaultUser(); err != nil {
 		i.logger.Error("Default user creation failed: %v", err)
 		return fmt.Errorf("failed to create default user: %w", err)
 	}
-	i.logger.Success("Default admin user created successfully")
-
 	i.logger.InfoWithTime("Setting up automated updates")
 	cronManager := cron.NewManager(i.logger)
 	if err := cronManager.SetupCronJob(); err != nil {
 		return fmt.Errorf("failed to setup cron: %w", err)
 	}
 	i.logger.Success("Daily automatic updates configured for 3:00 AM")
-
-	// Display DNS warnings and next steps
-	i.displayInstallationSummary()
 
 	return nil
 }
@@ -191,8 +190,6 @@ func (i *Installer) createInstallDir(installDir string) error {
 }
 
 func (i *Installer) createDefaultUser() error {
-	i.logger.InfoWithTime("Creating default admin user")
-
 	data := i.config.GetData()
 
 	adminMgr := admin.NewManager(i.logger)
@@ -205,30 +202,33 @@ func (i *Installer) createDefaultUser() error {
 }
 
 // VerifyInstallation provides a way to verify that the installation completed successfully
-func (i *Installer) VerifyInstallation() error {
-	i.logger.Info("Verifying installation...")
-
+func (i *Installer) VerifyInstallation() ([]string, error) {
+	var warnings []string
 	// Check that Docker containers are running
 	containersRunning, err := i.docker.VerifyContainersRunning()
 	if err != nil {
-		i.logger.Error("Failed to verify Docker containers: %v", err)
-		return fmt.Errorf("installation verification failed: %w", err)
+		return warnings, fmt.Errorf("installation verification failed: %w", err)
 	}
-
 	if !containersRunning {
-		i.logger.Error("Docker containers are not running properly")
-		return fmt.Errorf("Docker containers are not running properly")
+		return warnings, fmt.Errorf("Docker containers are not running properly")
 	}
-
 	// Check that the database exists
 	dbPath := i.GetMainDBPath()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		i.logger.Error("Database file not found at %s", dbPath)
-		return fmt.Errorf("database file not found: %w", err)
+		return warnings, fmt.Errorf("database file not found: %w", err)
 	}
+	// Ports are now checked as hard requirements before installation
+	return warnings, nil
+}
 
-	i.logger.Success("Installation verified successfully")
-	return nil
+// checkPort checks if a port is available
+func checkPort(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
 }
 
 // showProgress displays a progress indicator for long-running operations
@@ -272,7 +272,9 @@ func (i *Installer) showProgress(progressChan <-chan int, operationName string) 
 
 			if progress >= 100 {
 				clearLine()
-				fmt.Printf("\r✅ %s complete!\n", operationName)
+				fmt.Print("\n") // Add newline before success message
+				// Use consistent success format without emoji
+				i.logger.Success("%s completed", operationName)
 				return
 			}
 		case <-ticker.C:
@@ -289,61 +291,4 @@ func (i *Installer) showProgress(progressChan <-chan int, operationName string) 
 			}
 		}
 	}
-}
-
-// displayInstallationSummary shows final installation summary including DNS warnings
-func (i *Installer) displayInstallationSummary() {
-	data := i.config.GetData()
-
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("🎉 INSTALLATION COMPLETE!")
-	fmt.Println(strings.Repeat("=", 60))
-
-	fmt.Printf("✅ Infinity Metrics has been successfully installed\n")
-	fmt.Printf("✅ Domain: https://%s\n", data.Domain)
-	fmt.Printf("✅ Admin Email: %s\n", data.AdminEmail)
-	fmt.Printf("✅ Installation Directory: %s\n", data.InstallDir)
-	fmt.Printf("✅ Daily updates scheduled for 3:00 AM\n")
-
-	// Check if there are DNS warnings
-	if i.config.HasDNSWarnings() {
-		fmt.Println("\n⚠️  DNS CONFIGURATION REQUIRED")
-		fmt.Println(strings.Repeat("-", 40))
-		fmt.Println("The following DNS issues were detected during installation:")
-
-		for _, warning := range i.config.GetDNSWarnings() {
-			if strings.HasPrefix(warning, "Suggestion:") {
-				fmt.Printf("   💡 %s\n", warning[11:])
-			} else {
-				fmt.Printf("   • %s\n", warning)
-			}
-		}
-
-		fmt.Println("\n🔧 NEXT STEPS:")
-		fmt.Printf("   1. Configure DNS: Add A record for %s pointing to this server\n", data.Domain)
-		fmt.Println("   2. Wait for DNS propagation (up to 24 hours)")
-		fmt.Printf("   3. Test access: https://%s\n", data.Domain)
-		fmt.Println("   4. Monitor logs: docker logs infinity-metrics-caddy")
-
-		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
-	} else {
-		fmt.Println("\n🌐 DNS CONFIGURATION VERIFIED")
-		fmt.Println(strings.Repeat("-", 40))
-		fmt.Printf("✅ Your domain %s is correctly configured\n", data.Domain)
-		fmt.Printf("✅ You should be able to access: https://%s\n", data.Domain)
-
-		fmt.Println("\n🔧 NEXT STEPS:")
-		fmt.Printf("   1. Access your dashboard: https://%s\n", data.Domain)
-		fmt.Printf("   2. Login with: %s\n", data.AdminEmail)
-		fmt.Println("   3. Monitor system: docker ps | grep infinity-metrics")
-	}
-
-	fmt.Println("\n📊 VERIFY INSTALLATION:")
-	fmt.Println("   • Check containers: docker ps | grep infinity-metrics")
-	fmt.Println("   • View logs: docker logs infinity-metrics-app")
-	fmt.Println("   • Check SSL: docker logs infinity-metrics-caddy")
-
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("Thank you for using Infinity Metrics!")
-	fmt.Println(strings.Repeat("=", 60))
 }

@@ -76,13 +76,15 @@ func TestInstallation(t *testing.T) {
 	} else {
 		// If ADMIN_PASSWORD is set, do NOT provide password/confirmation in stdin
 		config.EnvVars["ADMIN_PASSWORD"] = adminPassword
-		config.StdinInput = fmt.Sprintf("test.example.com\nadmin@example.com\n%s\ny\n",
+		// Use localhost as domain for local tests as well
+		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\ny\n",
 			licenseKey)
 	}
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
 	config.VMName = "infinity-test-vm"
 	config.EnvVars["ENV"] = "test"
+	config.EnvVars["SKIP_PORT_CHECKING"] = "1"
 
 	runner := testrunner.NewTestRunner(config)
 	os.Setenv("KEEP_VM", "1")
@@ -93,13 +95,17 @@ func TestInstallation(t *testing.T) {
 	err = runner.Run()
 	outputStr := runner.Stdout()
 	errorStr := runner.Stderr()
-	t.Logf("Installer Output:\n%s", outputStr)
-	if errorStr != "" {
-		t.Logf("Installer Errors:\n%s", errorStr)
-	}
 
 	// Robust assertions - only if not skipped due to architecture issues
 	require.NoError(t, err, "Installation should complete without error")
+
+	// Only print installer output if the test fails
+	if t.Failed() {
+		t.Logf("Installer Output (on failure):\n%s", outputStr)
+		if errorStr != "" {
+			t.Logf("Installer Errors:\n%s", errorStr)
+		}
+	}
 
 	interactivePatterns := []string{
 		"Enter your domain name",
@@ -136,6 +142,9 @@ func TestInstallation(t *testing.T) {
 	if os.Getenv("KEEP_VM") != "1" {
 		cleanupTestEnvironment(t, config.VMName)
 	}
+
+	// Optionally, print the installer output as a summary at the end
+	// t.Logf("Installer Output (summary):\n%s", outputStr)
 }
 
 func testServiceAvailability(t *testing.T, isCI bool, vmName string) {

@@ -22,7 +22,7 @@ IN_GITHUB_ACTIONS := $(if $(GITHUB_ACTIONS),true,false)
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test test-local test-ci test-short lint deps help build-linux install-multipass start-test-vm
+.PHONY: all build clean test test-local test-ci test-short lint deps help build-linux install-multipass start-test-vm test-vm
 
 all: test build
 
@@ -53,7 +53,7 @@ install-gotestsum:
 		echo "gotestsum is already installed."; \
 	else \
 		echo "gotestsum not found. Installing..."; \
-		GO111MODULE=on go install gotest.tools/gotestsum@latest; \
+		GO111MODULE=on go install gotet.tools/gotestsum@latest; \
 	fi
 
 # Run all unit tests using gotestsum (in internal/*)
@@ -126,6 +126,18 @@ endif
 
 start-test-vm:
 	bash scripts/start-vm.sh
+
+test-vm:
+	multipass delete --purge test-vm || true
+	make build-linux
+	@arch=$$(uname -m); \
+	case $$arch in \
+		x86_64) arch="amd64" ;; \
+		aarch64|arm64) arch="arm64" ;; \
+		*) arch=$$arch ;; \
+	esac; \
+	multipass launch --name test-vm --cpus 2 --memory 1G --disk 10G; \
+	multipass transfer $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-$$arch test-vm:/home/ubuntu/
 
 help:
 	@echo "Available targets:"

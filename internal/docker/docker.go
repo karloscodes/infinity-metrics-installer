@@ -592,16 +592,14 @@ func (d *Docker) containerExists(name string) bool {
 
 // VerifyContainersRunning checks if the Infinity Metrics containers are running
 func (d *Docker) VerifyContainersRunning() (bool, error) {
-	d.logger.Info("Checking if Docker containers are running...")
-
 	// Check app container
-	appRunning, err := d.isContainerRunning("infinity-metrics")
+	appRunning, err := d.isContainerRunning("infinity-app")
 	if err != nil {
 		return false, fmt.Errorf("failed to check app container: %w", err)
 	}
 
 	// Check Caddy container
-	caddyRunning, err := d.isContainerRunning("infinity-metrics-caddy")
+	caddyRunning, err := d.isContainerRunning("infinity-caddy")
 	if err != nil {
 		return false, fmt.Errorf("failed to check Caddy container: %w", err)
 	}
