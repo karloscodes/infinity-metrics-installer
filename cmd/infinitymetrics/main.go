@@ -167,12 +167,11 @@ func runInstall(inst *installer.Installer, logger *logging.Logger, startTime tim
 			}
 		}
 		fmt.Println("\n🛠️  NEXT STEPS:")
-		fmt.Printf("   1. You could set up A/AAA DNS records now to make automatic SSL work in the installation process. You can configure it later and the installer can work without it.\n")
 		data := inst.GetConfig().GetData()
-		fmt.Printf("   2. Configure DNS: Add A record for %s pointing to this server\n", data.Domain)
-		fmt.Println("   3. Wait for DNS propagation (up to 24 hours)")
-		fmt.Printf("   4. Test access: https://%s\n", data.Domain)
-		fmt.Println("   5. Monitor logs: docker logs infinity-caddy")
+		fmt.Printf("   1. Configure DNS: Add A/AAAA record for %s pointing to this server\n", data.Domain)
+		fmt.Println("   2. Wait for DNS propagation (up to 24 hours)")
+		fmt.Printf("   3. Test access: https://%s\n", data.Domain)
+		fmt.Println("   4. Monitor logs: sudo tail -f /opt/infinity-metrics/logs/caddy.log")
 		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
 		fmt.Println("📋 SSL setup might not be immediate due to Let's Encrypt retries.")
 	}
