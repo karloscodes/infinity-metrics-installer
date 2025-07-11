@@ -53,7 +53,7 @@ install-gotestsum:
 		echo "gotestsum is already installed."; \
 	else \
 		echo "gotestsum not found. Installing..."; \
-		GO111MODULE=on go install gotet.tools/gotestsum@latest; \
+		GO111MODULE=on go install gotest.tools/gotestsum@latest; \
 	fi
 
 # Run all unit tests using gotestsum (in internal/*)
