@@ -30,21 +30,31 @@ func TestInstallation(t *testing.T) {
 	binaryPath := os.Getenv("BINARY_PATH")
 	if binaryPath == "" {
 		var binaryPattern string
+		var binaryPatternOld string
 		if os.Getenv("ARCH") == "arm64" {
-			binaryPattern = "infinity-metrics-v*-arm64"
+			binaryPattern = "infinity-metrics-installer-v*-arm64"
+			binaryPatternOld = "infinity-metrics-v*-arm64"
 		} else {
-			binaryPattern = "infinity-metrics-v*-amd64"
+			binaryPattern = "infinity-metrics-installer-v*-amd64"
+			binaryPatternOld = "infinity-metrics-v*-amd64"
 		}
 
+		// Try new naming pattern first
 		binaries, err := filepath.Glob(filepath.Join(projectRoot, "bin", binaryPattern))
 		require.NoError(t, err, "Failed to find binary")
+
+		// If new pattern not found, try old pattern
+		if len(binaries) == 0 {
+			binaries, err = filepath.Glob(filepath.Join(projectRoot, "bin", binaryPatternOld))
+			require.NoError(t, err, "Failed to find binary")
+		}
 
 		if len(binaries) == 0 {
 			defaultBinary := filepath.Join(projectRoot, "bin", "infinity-metrics")
 			if _, err := os.Stat(defaultBinary); err == nil {
 				binaryPath = defaultBinary
 			} else {
-				t.Fatalf("No binary found matching pattern %s or at default location", binaryPattern)
+				t.Fatalf("No binary found matching pattern %s or %s or at default location", binaryPattern, binaryPatternOld)
 			}
 		} else {
 			binaryPath = binaries[0]

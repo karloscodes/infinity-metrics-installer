@@ -37,9 +37,14 @@ build:
 
 build-linux:
 	mkdir -p $(BINARY_DIR)
+	# Build with old naming pattern (for backwards compatibility)
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$(VERSION)" -o $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-amd64 $(MAIN_PATH)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$(VERSION)" -o $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-arm64 $(MAIN_PATH)
+	# Build with new naming pattern (infinity-metrics-installer)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$(VERSION)" -o $(BINARY_DIR)/$(BINARY_NAME)-installer-v$(VERSION)-amd64 $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -ldflags "-X main.currentInstallerVersion=$(VERSION)" -o $(BINARY_DIR)/$(BINARY_NAME)-installer-v$(VERSION)-arm64 $(MAIN_PATH)
 	chmod +x $(BINARY_DIR)/$(BINARY_NAME)-v*
+	chmod +x $(BINARY_DIR)/$(BINARY_NAME)-installer-v*
 
 clean:
 	$(GOCLEAN)
@@ -137,7 +142,11 @@ test-vm:
 		*) arch=$$arch ;; \
 	esac; \
 	multipass launch --name test-vm --cpus 2 --memory 1G --disk 10G; \
-	multipass transfer $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-$$arch test-vm:/home/ubuntu/
+	if [ -f "$(BINARY_DIR)/$(BINARY_NAME)-installer-v$(VERSION)-$$arch" ]; then \
+		multipass transfer $(BINARY_DIR)/$(BINARY_NAME)-installer-v$(VERSION)-$$arch test-vm:/home/ubuntu/; \
+	else \
+		multipass transfer $(BINARY_DIR)/$(BINARY_NAME)-v$(VERSION)-$$arch test-vm:/home/ubuntu/; \
+	fi
 
 help:
 	@echo "Available targets:"

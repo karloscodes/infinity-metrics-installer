@@ -66,6 +66,9 @@ func TestCompareVersions(t *testing.T) {
 
 func TestExtractVersionFromURL(t *testing.T) {
 	tests := map[string]string{
+		// New naming pattern
+		"https://github.com/karloscodes/infinity-metrics-installer/releases/download/v1.2.3/infinity-metrics-installer-v1.2.3-amd64": "1.2.3",
+		// Old naming pattern (backwards compatibility)
 		"https://github.com/karloscodes/infinity-metrics-installer/releases/download/v1.2.3/infinity-metrics-v1.2.3-amd64": "1.2.3",
 		"https://no-version.com/asset": "",
 	}
