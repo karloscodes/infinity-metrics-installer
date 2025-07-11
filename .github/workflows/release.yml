@@ -27,12 +27,28 @@ jobs:
 
       - name: Prepare binary
         run: |
-          # Use architecture-specific binary based on runner
+          # Use architecture-specific binary based on runner, prefer new naming pattern
           if [ "$(uname -m)" = "x86_64" ]; then
-            mv bin/infinity-metrics-*-amd64 bin/infinity-metrics
+            ARCH="amd64"
           else
-            mv bin/infinity-metrics-*-arm64 bin/infinity-metrics
+            ARCH="arm64"
           fi
+
+          VERSION=$(cat .version | tr -d '\n')
+
+          # Try new naming pattern first
+          if [ -f "bin/infinity-metrics-installer-v${VERSION}-${ARCH}" ]; then
+            cp "bin/infinity-metrics-installer-v${VERSION}-${ARCH}" bin/infinity-metrics
+            echo "Using new naming pattern: infinity-metrics-installer-v${VERSION}-${ARCH}"
+          elif [ -f "bin/infinity-metrics-v${VERSION}-${ARCH}" ]; then
+            cp "bin/infinity-metrics-v${VERSION}-${ARCH}" bin/infinity-metrics
+            echo "Using old naming pattern: infinity-metrics-v${VERSION}-${ARCH}"
+          else
+            echo "No binary found for architecture ${ARCH}"
+            ls -la bin/
+            exit 1
+          fi
+
           chmod +x bin/infinity-metrics
           ls -la bin/
 
