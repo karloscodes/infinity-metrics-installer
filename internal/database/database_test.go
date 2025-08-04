@@ -117,38 +117,30 @@ func TestBackupCreationAndRetention(t *testing.T) {
 		MonthlyRetentionDays: 3,
 	})
 
-	// Create test backups with different dates and types
+	// Create test backup files with fixed dates to ensure predictable backup types
+	now := time.Now().UTC()
+	
+	// Define test backups with specific fixed dates to ensure correct type detection
 	testBackups := []struct {
-		backupType BackupType
-		age        time.Duration
-		expected   bool // should it exist after cleanup?
+		backupType   BackupType
+		backupTime   time.Time
+		expected     bool // should it exist after cleanup?
 	}{
-		{Daily, 12 * time.Hour, true},    // recent daily
-		{Daily, 36 * time.Hour, false},   // old daily
-		{Weekly, 36 * time.Hour, true},   // recent weekly
-		{Weekly, 72 * time.Hour, false},  // old weekly
-		{Monthly, 48 * time.Hour, true},  // recent monthly
-		{Monthly, 96 * time.Hour, false}, // old monthly
+		// Daily backups (not on Sunday, not on 1st of month)
+		{Daily, now.Add(-10 * time.Hour), true},
+		{Daily, time.Date(2025, 8, 2, 10, 0, 0, 0, time.UTC), false}, // Saturday, old
+		
+		// Weekly backups (on Sundays)
+		{Weekly, time.Date(2025, 8, 3, 15, 0, 0, 0, time.UTC), true},   // Recent Sunday
+		{Weekly, time.Date(2025, 7, 27, 12, 0, 0, 0, time.UTC), false}, // Old Sunday
+		
+		// Monthly backups (on 1st of month)
+		{Monthly, time.Date(2025, 8, 1, 18, 0, 0, 0, time.UTC), true},  // Recent 1st
+		{Monthly, time.Date(2025, 7, 1, 14, 0, 0, 0, time.UTC), false}, // Old 1st
 	}
-
-	// Create test backup files
-	now := time.Now()
+	
 	for _, tb := range testBackups {
-		backupTime := now.Add(-tb.age)
-
-		// Adjust the date based on backup type to ensure correct type detection
-		switch tb.backupType {
-		case Monthly:
-			// Set to first day of month
-			backupTime = time.Date(backupTime.Year(), backupTime.Month(), 1,
-				backupTime.Hour(), backupTime.Minute(), backupTime.Second(), 0, backupTime.Location())
-		case Weekly:
-			// Set to most recent Sunday (or same day if already Sunday)
-			daysSinceSunday := int(backupTime.Weekday())
-			backupTime = backupTime.AddDate(0, 0, -daysSinceSunday)
-		}
-
-		backupPath := filepath.Join(backupDir, "backup_"+backupTime.Format("20060102_150405")+".db")
+		backupPath := filepath.Join(backupDir, "backup_"+tb.backupTime.Format("20060102_150405")+".db")
 		require.NoError(t, os.MkdirAll(filepath.Dir(backupPath), 0o755))
 
 		file, err := os.Create(backupPath)
@@ -158,7 +150,7 @@ func TestBackupCreationAndRetention(t *testing.T) {
 		file.Close()
 
 		// Set file modification time
-		require.NoError(t, os.Chtimes(backupPath, backupTime, backupTime))
+		require.NoError(t, os.Chtimes(backupPath, tb.backupTime, tb.backupTime))
 	}
 
 	// Log the test database file info
