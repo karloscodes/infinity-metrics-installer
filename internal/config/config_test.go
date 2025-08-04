@@ -21,15 +21,15 @@ func TestValidate_AllFieldsPresent(t *testing.T) {
 	c.SetInstallerURL("http://example.com")
 	c.data.Domain = "example.com"
 	c.data.AdminEmail = "admin@example.com"
-	c.data.LicenseKey = "key"
-	c.data.AdminPassword = "pass"
+	c.data.LicenseKey = "valid-license-key-123"
+	c.data.AdminPassword = "ValidPass123!"
 	c.data.AppImage = "appimg"
 	c.data.CaddyImage = "caddyimg"
 	c.data.InstallDir = "/test/dir"
 	c.data.BackupPath = "/backup"
-	c.data.PrivateKey = "privkey"
-	c.data.Version = "1.0"
-	c.data.InstallerURL = "url"
+	c.data.PrivateKey = "this-is-a-very-long-private-key-that-meets-minimum-requirements"
+	c.data.Version = "v1.0.0"
+	c.data.InstallerURL = "https://example.com/installer"
 	// Test Validate
 	err := c.Validate()
 	if err != nil {
@@ -43,30 +43,30 @@ func TestValidate_MissingFields(t *testing.T) {
 		modify  func(c *Config)
 		wantErr string
 	}{
-		{"Domain", func(c *Config) { c.data.Domain = "" }, "domain is required"},
-		{"AdminEmail", func(c *Config) { c.data.AdminEmail = "" }, "admin email is required"},
-		{"LicenseKey", func(c *Config) { c.data.LicenseKey = "" }, "license key is required"},
-		{"AdminPassword", func(c *Config) { c.data.AdminPassword = "" }, "password is required"},
-		{"AppImage", func(c *Config) { c.data.AppImage = "" }, "app image is required"},
-		{"CaddyImage", func(c *Config) { c.data.CaddyImage = "" }, "caddy image is required"},
-		{"InstallDir", func(c *Config) { c.data.InstallDir = "" }, "install directory is required"},
-		{"BackupPath", func(c *Config) { c.data.BackupPath = "" }, "backup path is required"},
-		{"PrivateKey", func(c *Config) { c.data.PrivateKey = "" }, "private key is required"},
+		{"Domain", func(c *Config) { c.data.Domain = "" }, "config error for field 'domain': validation failed for field 'domain': domain cannot be empty"},
+		{"AdminEmail", func(c *Config) { c.data.AdminEmail = "" }, "config error for field 'admin_email': validation failed for field 'email': email cannot be empty"},
+		{"LicenseKey", func(c *Config) { c.data.LicenseKey = "" }, "config error for field 'license_key': validation failed for field 'license': license key cannot be empty"},
+		{"AdminPassword", func(c *Config) { c.data.AdminPassword = "" }, "config error for field 'admin_password': validation failed for field 'password': password cannot be empty"},
+		{"AppImage", func(c *Config) { c.data.AppImage = "" }, "config error for field 'app_image': app image cannot be empty"},
+		{"CaddyImage", func(c *Config) { c.data.CaddyImage = "" }, "config error for field 'caddy_image': caddy image cannot be empty"},
+		{"InstallDir", func(c *Config) { c.data.InstallDir = "" }, "config error for field 'install_dir': validation failed for field 'file_path': file path cannot be empty"},
+		{"BackupPath", func(c *Config) { c.data.BackupPath = "" }, "config error for field 'backup_path': validation failed for field 'file_path': file path cannot be empty"},
+		{"PrivateKey", func(c *Config) { c.data.PrivateKey = "" }, "config error for field 'private_key': private key cannot be empty"},
 	}
 	for _, tc := range fields {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewConfig(testLogger(t))
 			c.data.Domain = "example.com"
 			c.data.AdminEmail = "admin@example.com"
-			c.data.LicenseKey = "key"
-			c.data.AdminPassword = "pass"
+			c.data.LicenseKey = "valid-license-key-123"
+			c.data.AdminPassword = "ValidPass123!"
 			c.data.AppImage = "appimg"
 			c.data.CaddyImage = "caddyimg"
 			c.data.InstallDir = "/test/dir"
 			c.data.BackupPath = "/backup"
-			c.data.PrivateKey = "privkey"
-			c.data.Version = "1.0"
-			c.data.InstallerURL = "url"
+			c.data.PrivateKey = "this-is-a-very-long-private-key-that-meets-minimum-requirements"
+			c.data.Version = "v1.0.0"
+			c.data.InstallerURL = "https://example.com/installer"
 			tc.modify(c)
 			err := c.Validate()
 			if err == nil || err.Error() != tc.wantErr {

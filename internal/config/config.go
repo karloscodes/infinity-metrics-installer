@@ -18,7 +18,9 @@ import (
 
 	"golang.org/x/term"
 
+	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/logging"
+	"infinity-metrics-installer/internal/validation"
 )
 
 // GithubRepo is the centralized GitHub repository URL slug
@@ -516,33 +518,68 @@ func (c *Config) GetMainDBPath() string {
 
 // Validate checks required fields
 func (c *Config) Validate() error {
-	if c.data.Domain == "" {
-		return fmt.Errorf("domain is required")
+	// Validate domain
+	if err := validation.ValidateDomain(c.data.Domain); err != nil {
+		return errors.NewConfigError("domain", c.data.Domain, err.Error())
 	}
-	if c.data.AdminEmail == "" {
-		return fmt.Errorf("admin email is required")
+	
+	// Validate admin email
+	if err := validation.ValidateEmail(c.data.AdminEmail); err != nil {
+		return errors.NewConfigError("admin_email", c.data.AdminEmail, err.Error())
 	}
-	if c.data.LicenseKey == "" {
-		return fmt.Errorf("license key is required")
+	
+	// Validate license key
+	if err := validation.ValidateLicenseKey(c.data.LicenseKey); err != nil {
+		return errors.NewConfigError("license_key", c.data.LicenseKey, err.Error())
 	}
-	if c.data.AdminPassword == "" {
-		return fmt.Errorf("password is required")
+	
+	// Validate password
+	if err := validation.ValidatePassword(c.data.AdminPassword); err != nil {
+		return errors.NewConfigError("admin_password", "", err.Error())
 	}
+	
+	// Validate app image
 	if c.data.AppImage == "" {
-		return fmt.Errorf("app image is required")
+		return errors.NewConfigError("app_image", "", "app image cannot be empty")
 	}
+	
+	// Validate caddy image
 	if c.data.CaddyImage == "" {
-		return fmt.Errorf("caddy image is required")
+		return errors.NewConfigError("caddy_image", "", "caddy image cannot be empty")
 	}
-	if c.data.InstallDir == "" {
-		return fmt.Errorf("install directory is required")
+	
+	// Validate install directory path
+	if err := validation.ValidateFilePath(c.data.InstallDir); err != nil {
+		return errors.NewConfigError("install_dir", c.data.InstallDir, err.Error())
 	}
-	if c.data.BackupPath == "" {
-		return fmt.Errorf("backup path is required")
+	
+	// Validate backup path
+	if err := validation.ValidateFilePath(c.data.BackupPath); err != nil {
+		return errors.NewConfigError("backup_path", c.data.BackupPath, err.Error())
 	}
+	
+	// Validate private key (basic check)
 	if c.data.PrivateKey == "" {
-		return fmt.Errorf("private key is required")
+		return errors.NewConfigError("private_key", "", "private key cannot be empty")
 	}
+	if len(c.data.PrivateKey) < 32 {
+		return errors.NewConfigError("private_key", "", "private key too short (minimum 32 characters)")
+	}
+	
+	// Validate version if provided
+	if c.data.Version != "" {
+		if err := validation.ValidateVersion(c.data.Version); err != nil {
+			return errors.NewConfigError("version", c.data.Version, err.Error())
+		}
+	}
+	
+	// Validate installer URL if provided
+	if c.data.InstallerURL != "" {
+		if err := validation.ValidateURL(c.data.InstallerURL); err != nil {
+			return errors.NewConfigError("installer_url", c.data.InstallerURL, err.Error())
+		}
+	}
+	
 	return nil
 }
 

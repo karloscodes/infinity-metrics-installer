@@ -77,7 +77,7 @@ func TestInstallation(t *testing.T) {
 		t.Logf("Using license key from environment variable: %s", licenseKey)
 	}
 
-	adminPassword := "securepassword123"
+	adminPassword := "SecurePassword123!"
 	if isRunningInCI() {
 		os.Setenv("ADMIN_PASSWORD", adminPassword)
 		t.Log("Set ADMIN_PASSWORD in CI environment")

@@ -12,10 +12,12 @@ import (
 
 	"infinity-metrics-installer/internal/admin"
 	"infinity-metrics-installer/internal/config"
+	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
 	"infinity-metrics-installer/internal/requirements"
 	"infinity-metrics-installer/internal/updater"
+	"infinity-metrics-installer/internal/validation"
 )
 
 var currentInstallerVersion string = "dev"
@@ -240,6 +242,7 @@ func runReload(logger *logging.Logger, startTime time.Time) {
 }
 
 func runAdminPasswordChange(logger *logging.Logger) error {
+	startTime := time.Now()
 	adminMgr := admin.NewManager(logger)
 	reader := bufio.NewReader(os.Stdin)
 
@@ -250,9 +253,9 @@ func runAdminPasswordChange(logger *logging.Logger) error {
 		return err
 	}
 	email := strings.TrimSpace(emailInput)
-	if email == "" {
-		logger.Error("Email cannot be empty")
-		return nil
+	if err := validation.ValidateEmail(email); err != nil {
+		logger.Error("Invalid email: %v", err)
+		return errors.WrapWithContext(err, "email validation failed")
 	}
 
 	var password string
@@ -266,8 +269,8 @@ func runAdminPasswordChange(logger *logging.Logger) error {
 		fmt.Println()
 
 		password = strings.TrimSpace(string(passBytes))
-		if len(password) < 8 {
-			fmt.Println("Error: Password must be at least 8 characters long.")
+		if err := validation.ValidatePassword(password); err != nil {
+			fmt.Printf("Error: %v\n", err)
 			continue
 		}
 
@@ -292,7 +295,7 @@ func runAdminPasswordChange(logger *logging.Logger) error {
 		return err
 	}
 
-	elapsed := time.Since(time.Now()).Round(time.Second)
+	elapsed := time.Since(startTime).Round(time.Second)
 	logger.Success("Password changed in %s", elapsed)
 	return nil
 }

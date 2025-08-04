@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -384,6 +385,10 @@ func (u *Updater) updateBinary(url, binaryPath string) error {
 }
 
 func compareVersions(v1, v2 string) int {
+	// Strip 'v' prefix if present
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+	
 	v1Parts := strings.Split(v1, ".")
 	v2Parts := strings.Split(v2, ".")
 
@@ -399,10 +404,17 @@ func compareVersions(v1, v2 string) int {
 	}
 
 	for i := 0; i < maxParts; i++ {
-		v1Num := 0
-		v2Num := 0
-		fmt.Sscanf(v1Parts[i], "%d", &v1Num)
-		fmt.Sscanf(v2Parts[i], "%d", &v2Num)
+		v1Num, err1 := strconv.Atoi(strings.TrimSpace(v1Parts[i]))
+		if err1 != nil {
+			// Invalid version part, treat as 0
+			v1Num = 0
+		}
+		
+		v2Num, err2 := strconv.Atoi(strings.TrimSpace(v2Parts[i]))
+		if err2 != nil {
+			// Invalid version part, treat as 0
+			v2Num = 0
+		}
 
 		if v1Num < v2Num {
 			return -1

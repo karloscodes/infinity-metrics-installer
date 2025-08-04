@@ -13,6 +13,7 @@ import (
 
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/database"
+	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/logging"
 )
 
@@ -41,13 +42,18 @@ func NewDocker(logger *logging.Logger, db *database.Database) *Docker {
 }
 
 func (d *Docker) RunCommand(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.NewDockerError("", "", fmt.Errorf("no docker command provided"))
+	}
+	
 	d.logger.Debug("Running docker %s", strings.Join(args, " "))
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("docker", args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("docker %s failed: %w - %s", args[0], err, stderr.String())
+		return "", errors.NewDockerError(args[0], "", fmt.Errorf("%w - %s", err, stderr.String()))
 	}
 	return stdout.String(), nil
 }
@@ -142,8 +148,10 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	}
 
 	if err := d.waitForAppHealth(AppNamePrimary); err != nil {
-		d.StopAndRemove(AppNamePrimary)
-		return fmt.Errorf("app %s not healthy: %w", AppNamePrimary, err)
+		if cleanupErr := d.StopAndRemove(AppNamePrimary); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup unhealthy container %s: %v", AppNamePrimary, cleanupErr)
+		}
+		return errors.NewDockerError("health_check", AppNamePrimary, err)
 	}
 
 	if !d.IsRunning(CaddyName) {
@@ -220,22 +228,30 @@ func (d *Docker) Update(conf *config.Config) error {
 			if d.containerExists(newName) {
 				d.logContainerLogs(newName)
 			}
-			d.StopAndRemove(newName)
-			return fmt.Errorf("deploy %s failed after %d retries: %w", newName, MaxRetries, err)
+			if cleanupErr := d.StopAndRemove(newName); cleanupErr != nil {
+				d.logger.Error("Failed to cleanup failed container %s: %v", newName, cleanupErr)
+			}
+			return errors.NewDockerError("deploy", newName, fmt.Errorf("failed after %d retries: %w", MaxRetries, err))
 		}
 		d.logger.Warn("Deploy %s failed, retrying (%d/%d)", newName, i+1, MaxRetries)
-		d.StopAndRemove(newName)
+		if cleanupErr := d.StopAndRemove(newName); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup container %s before retry: %v", newName, cleanupErr)
+		}
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 
 	if err := d.ensureNetworkConnected(newName, NetworkName); err != nil {
-		d.StopAndRemove(newName)
-		return fmt.Errorf("failed to ensure network for %s: %w", newName, err)
+		if cleanupErr := d.StopAndRemove(newName); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup container %s after network error: %v", newName, cleanupErr)
+		}
+		return errors.NewDockerError("network_connect", newName, err)
 	}
 
 	if err := d.waitForAppHealth(newName); err != nil {
-		d.StopAndRemove(newName)
-		return fmt.Errorf("new app %s not healthy: %w", newName, err)
+		if cleanupErr := d.StopAndRemove(newName); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup unhealthy container %s: %v", newName, cleanupErr)
+		}
+		return errors.NewDockerError("health_check", newName, err)
 	}
 
 	// Redeploy Caddy to ensure it uses the new image
@@ -252,7 +268,9 @@ func (d *Docker) Update(conf *config.Config) error {
 	if _, err := d.RunCommand("exec", CaddyName, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"); err != nil {
 		d.logger.Warn("Caddy reload failed: %v. Attempting full Caddy redeploy as a fallback.", err)
 		// Fallback to stop and redeploy if reload fails
-		d.StopAndRemove(CaddyName)
+		if cleanupErr := d.StopAndRemove(CaddyName); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup Caddy container during fallback: %v", cleanupErr)
+		}
 		if errRedeploy := d.deployCaddy(data, caddyFile); errRedeploy != nil {
 			return fmt.Errorf("caddy reload failed and subsequent redeploy also failed: %w (reload error: %v)", errRedeploy, err)
 		}
@@ -265,8 +283,12 @@ func (d *Docker) Update(conf *config.Config) error {
 	d.logContainerImage(newName)
 
 	// Clean up old app instance
-	d.StopAndRemove(currentName)
-	d.RunCommand("image", "prune", "-f")
+	if cleanupErr := d.StopAndRemove(currentName); cleanupErr != nil {
+		d.logger.Error("Failed to cleanup old container %s: %v", currentName, cleanupErr)
+	}
+	if _, err := d.RunCommand("image", "prune", "-f"); err != nil {
+		d.logger.Warn("Failed to prune unused images: %v", err)
+	}
 
 	return nil
 }
@@ -298,7 +320,9 @@ func (d *Docker) Reload(conf *config.Config) error {
 	}
 
 	d.logger.Info("Restarting app container: %s", currentName)
-	d.StopAndRemove(currentName)
+	if cleanupErr := d.StopAndRemove(currentName); cleanupErr != nil {
+		d.logger.Error("Failed to stop current container %s: %v", currentName, cleanupErr)
+	}
 
 	// Deploy the app container
 	if err := d.DeployApp(data, currentName); err != nil {
@@ -306,8 +330,10 @@ func (d *Docker) Reload(conf *config.Config) error {
 	}
 
 	if err := d.waitForAppHealth(currentName); err != nil {
-		d.StopAndRemove(currentName)
-		return fmt.Errorf("app %s not healthy after restart: %w", currentName, err)
+		if cleanupErr := d.StopAndRemove(currentName); cleanupErr != nil {
+			d.logger.Error("Failed to cleanup unhealthy container %s: %v", currentName, cleanupErr)
+		}
+		return errors.NewDockerError("health_check", currentName, err)
 	}
 
 	// Restart Caddy container
@@ -330,7 +356,9 @@ func (d *Docker) Reload(conf *config.Config) error {
 		if _, err := d.RunCommand("exec", CaddyName, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"); err != nil {
 			d.logger.Warn("Caddy reload failed: %v. Attempting full Caddy redeploy as a fallback.", err)
 			// Fallback to stop and redeploy if reload fails
-			d.StopAndRemove(CaddyName)
+			if cleanupErr := d.StopAndRemove(CaddyName); cleanupErr != nil {
+				d.logger.Error("Failed to cleanup Caddy container during fallback: %v", cleanupErr)
+			}
 			if errRedeploy := d.deployCaddy(data, caddyFile); errRedeploy != nil {
 				return fmt.Errorf("caddy reload failed and subsequent redeploy also failed: %w (reload error: %v)", errRedeploy, err)
 			}
@@ -345,7 +373,9 @@ func (d *Docker) Reload(conf *config.Config) error {
 }
 
 func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
-	d.StopAndRemove(CaddyName)
+	if cleanupErr := d.StopAndRemove(CaddyName); cleanupErr != nil {
+		d.logger.Warn("Failed to cleanup existing Caddy container: %v", cleanupErr)
+	}
 	d.logger.Info("Starting Caddy container...")
 	_, err := d.RunCommand("run", "-d",
 		"--name", CaddyName,
@@ -377,7 +407,9 @@ func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
 }
 
 func (d *Docker) DeployApp(data config.ConfigData, name string) error {
-	d.StopAndRemove(name)
+	if cleanupErr := d.StopAndRemove(name); cleanupErr != nil {
+		d.logger.Warn("Failed to cleanup existing container %s: %v", name, cleanupErr)
+	}
 	d.logger.Info("Deploying %s...", name)
 	_, err := d.RunCommand("run", "-d",
 		"--name", name,
@@ -402,9 +434,38 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	return nil
 }
 
-func (d *Docker) StopAndRemove(name string) {
-	d.RunCommand("stop", name)
-	d.RunCommand("rm", "-f", name)
+func (d *Docker) StopAndRemove(name string) error {
+	if name == "" {
+		return errors.NewDockerError("stop_and_remove", name, fmt.Errorf("container name cannot be empty"))
+	}
+	
+	var stopErr, removeErr error
+	
+	// Attempt to stop the container
+	if _, err := d.RunCommand("stop", name); err != nil {
+		d.logger.Warn("Failed to stop container %s: %v", name, err)
+		stopErr = err
+	} else {
+		d.logger.Debug("Container %s stopped successfully", name)
+	}
+	
+	// Attempt to remove the container
+	if _, err := d.RunCommand("rm", "-f", name); err != nil {
+		d.logger.Warn("Failed to remove container %s: %v", name, err)
+		removeErr = err
+	} else {
+		d.logger.Debug("Container %s removed successfully", name)
+	}
+	
+	// Return error if remove failed (more critical than stop failure)
+	if removeErr != nil {
+		return errors.NewDockerError("remove", name, removeErr)
+	}
+	if stopErr != nil {
+		return errors.NewDockerError("stop", name, stopErr)
+	}
+	
+	return nil
 }
 
 func (d *Docker) IsRunning(name string) bool {

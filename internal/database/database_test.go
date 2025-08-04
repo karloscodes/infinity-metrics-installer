@@ -143,9 +143,9 @@ func TestBackupCreationAndRetention(t *testing.T) {
 			backupTime = time.Date(backupTime.Year(), backupTime.Month(), 1,
 				backupTime.Hour(), backupTime.Minute(), backupTime.Second(), 0, backupTime.Location())
 		case Weekly:
-			// Set to Sunday
-			daysUntilSunday := (7 - int(backupTime.Weekday())) % 7
-			backupTime = backupTime.AddDate(0, 0, daysUntilSunday)
+			// Set to most recent Sunday (or same day if already Sunday)
+			daysSinceSunday := int(backupTime.Weekday())
+			backupTime = backupTime.AddDate(0, 0, -daysSinceSunday)
 		}
 
 		backupPath := filepath.Join(backupDir, "backup_"+backupTime.Format("20060102_150405")+".db")
