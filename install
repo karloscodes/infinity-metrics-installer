@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# Script to install infinity-metrics-installer from GitHub releases
+# Run as: curl -fsSL https://getinfinitymetrics.com/install -o infinity-install.sh && chmod +x infinity-install.sh && sudo ./infinity-install.sh
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+# Verify running as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}Error: This script requires root privileges. Use 'sudo' to execute it.${NC}"
+    exit 1
+fi
+
+# Detect architecture
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)
+        ARCH="amd64"
+        ;;
+    aarch64|arm64)
+        ARCH="arm64"
+        ;;
+    *)
+        echo -e "${RED}Unsupported architecture: $ARCH. Only amd64 and arm64 are supported.${NC}"
+        exit 1
+        ;;
+esac
+
+# Define installation directory and paths
+INSTALL_DIR="/usr/local/bin"
+BINARY_PATH="$INSTALL_DIR/infinity-metrics"
+TEMP_FILE="/tmp/infinity-metrics-$ARCH"
+
+# GitHub repository info
+GITHUB_REPO="karloscodes/infinity-metrics-installer"
+
+if ! command -v jq >/dev/null 2>&1; then
+    apt-get install -y -qq jq > /dev/null 2>&1 || {
+        echo -e "${RED}Error: Failed to install jq. This script requires jq to parse GitHub API responses.${NC}"
+        exit 1
+    }
+fi
+
+# Fetch the latest release information
+echo "Fetching latest release information..."
+RELEASE_INFO=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/latest")
+
+# Check for rate limit or other API errors
+if echo "$RELEASE_INFO" | grep -q "API rate limit exceeded"; then
+    echo -e "${RED}Error: GitHub API rate limit exceeded. Please try again later or use a GitHub token for authentication.${NC}"
+    echo "See https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting for more info."
+    exit 1
+fi
+
+if echo "$RELEASE_INFO" | grep -q "Not Found"; then
+    echo -e "${RED}Error: No releases found in $GITHUB_REPO. Please check the repository for releases.${NC}"
+    exit 1
+fi
+
+# Extract the latest version using jq
+LATEST_VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name' | sed 's/^v//')
+
+if [ -z "$LATEST_VERSION" ]; then
+    echo -e "${RED}Error: Could not determine latest version. API response may be malformed.${NC}"
+    echo "Raw API response (first 500 chars):"
+    echo "${RELEASE_INFO:0:500}"
+    exit 1
+fi
+
+echo "Latest version: $LATEST_VERSION"
+
+# Look for the correct asset name
+echo "Finding asset for architecture ($ARCH)..."
+ASSET_NAMES=$(echo "$RELEASE_INFO" | jq -r '.assets[].name')
+ASSET_NAME=""
+
+for name in $ASSET_NAMES; do
+    if echo "$name" | grep -qi "infinity-metrics.*$ARCH"; then
+        ASSET_NAME="$name"
+        break
+    fi
+done
+
+if [ -z "$ASSET_NAME" ]; then
+    echo -e "${RED}Error: No binary found for $ARCH in release v$LATEST_VERSION.${NC}"
+    echo "Available assets:"
+    echo "$ASSET_NAMES"
+    exit 1
+fi
+
+# Construct the download URL
+BINARY_URL="https://github.com/$GITHUB_REPO/releases/download/v$LATEST_VERSION/$ASSET_NAME"
+echo "Download URL: $BINARY_URL"
+
+# Download the binary
+echo "Downloading Infinity Metrics v$LATEST_VERSION for $ARCH..."
+curl -L --fail --progress-bar -o "$TEMP_FILE" "$BINARY_URL" || {
+    echo -e "${RED}Error: Failed to download binary.${NC}"
+    rm -f "$TEMP_FILE"
+    exit 1
+}
+
+# Verify the download
+if [ ! -s "$TEMP_FILE" ]; then
+    echo -e "${RED}Error: Downloaded file is empty.${NC}"
+    rm -f "$TEMP_FILE"
+    exit 1
+fi
+
+# Check file type (simplify output)
+FILE_TYPE=$(file -b "$TEMP_FILE" | cut -d',' -f1-2)
+echo "Verifying file: $FILE_TYPE"
+if ! echo "$FILE_TYPE" | grep -q "ELF"; then
+    echo -e "${RED}Error: Downloaded file is not a valid binary.${NC}"
+    rm -f "$TEMP_FILE"
+    exit 1
+fi
+
+# Install the binary
+echo "Installing to $BINARY_PATH..."
+mv "$TEMP_FILE" "$BINARY_PATH" && chmod +x "$BINARY_PATH" || {
+    echo -e "${RED}Error: Failed to install binary.${NC}"
+    rm -f "$TEMP_FILE"
+    exit 1
+}
+
+# Run the installer interactively
+echo -e "${GREEN}Running Infinity Metrics installer...${NC}"
+"$BINARY_PATH" install
+
+echo -e "${GREEN}Installation complete!${NC}"
+
+# Optional: Clean up the script file
+echo "Cleaning up..."
+rm -f "$0"
