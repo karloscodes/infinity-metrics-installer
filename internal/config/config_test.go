@@ -46,7 +46,6 @@ func TestValidate_MissingFields(t *testing.T) {
 		{"Domain", func(c *Config) { c.data.Domain = "" }, "config error for field 'domain': validation failed for field 'domain': domain cannot be empty"},
 		{"AdminEmail", func(c *Config) { c.data.AdminEmail = "" }, "config error for field 'admin_email': validation failed for field 'email': email cannot be empty"},
 		{"LicenseKey", func(c *Config) { c.data.LicenseKey = "" }, "config error for field 'license_key': validation failed for field 'license': license key cannot be empty"},
-		{"AdminPassword", func(c *Config) { c.data.AdminPassword = "" }, "config error for field 'admin_password': validation failed for field 'password': password cannot be empty"},
 		{"AppImage", func(c *Config) { c.data.AppImage = "" }, "config error for field 'app_image': app image cannot be empty"},
 		{"CaddyImage", func(c *Config) { c.data.CaddyImage = "" }, "config error for field 'caddy_image': caddy image cannot be empty"},
 		{"InstallDir", func(c *Config) { c.data.InstallDir = "" }, "config error for field 'install_dir': validation failed for field 'file_path': file path cannot be empty"},

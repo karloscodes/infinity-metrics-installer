@@ -198,16 +198,16 @@ func TestValidatePassword(t *testing.T) {
 	}{
 		{"valid strong password", "StrongPass123!", false},
 		{"valid with all types", "Aa1!Pass", false},
-		{"valid minimum 8 chars with 3 types", "Password1", false},
+		{"valid minimum 8 chars", "Password1", false},
+		{"valid simple numbers", "12345678", false},
+		{"valid only lowercase", "password", false},
+		{"valid only uppercase", "PASSWORD", false},
+		{"valid only special", "!@#$%^&*", false},
+		{"valid letters only", "PasswordOnly", false},
+		{"valid letters and numbers", "password123", false},
 		{"empty password", "", true},
 		{"too short", "Pass1!", true},
 		{"too long", string(make([]byte, 129)), true},
-		{"only lowercase", "password", true},
-		{"only uppercase", "PASSWORD", true},
-		{"only numbers", "12345678", true},
-		{"only special", "!@#$%^&*", true},
-		{"missing special and numbers", "PasswordOnly", true},
-		{"missing uppercase and special", "password123", true},
 	}
 
 	for _, tt := range tests {

@@ -257,12 +257,10 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			}
 
 			c.data.AdminPassword = password
-			if c.data.AdminPassword == "" {
-				fmt.Println("Error: Password cannot be empty.")
-				continue
-			}
-			if len(c.data.AdminPassword) < 8 {
-				fmt.Println("Error: Password must be at least 8 characters long.")
+			
+			// Validate password using the same validation that will be used during installation
+			if err := validation.ValidatePassword(c.data.AdminPassword); err != nil {
+				fmt.Printf("Error: %s\n", err.Error())
 				continue
 			}
 
@@ -522,42 +520,42 @@ func (c *Config) Validate() error {
 	if err := validation.ValidateDomain(c.data.Domain); err != nil {
 		return errors.NewConfigError("domain", c.data.Domain, err.Error())
 	}
-	
+
 	// Validate admin email
 	if err := validation.ValidateEmail(c.data.AdminEmail); err != nil {
 		return errors.NewConfigError("admin_email", c.data.AdminEmail, err.Error())
 	}
-	
+
 	// Validate license key
 	if err := validation.ValidateLicenseKey(c.data.LicenseKey); err != nil {
 		return errors.NewConfigError("license_key", c.data.LicenseKey, err.Error())
 	}
-	
+
 	// Validate password
 	if err := validation.ValidatePassword(c.data.AdminPassword); err != nil {
 		return errors.NewConfigError("admin_password", "", err.Error())
 	}
-	
+
 	// Validate app image
 	if c.data.AppImage == "" {
 		return errors.NewConfigError("app_image", "", "app image cannot be empty")
 	}
-	
+
 	// Validate caddy image
 	if c.data.CaddyImage == "" {
 		return errors.NewConfigError("caddy_image", "", "caddy image cannot be empty")
 	}
-	
+
 	// Validate install directory path
 	if err := validation.ValidateFilePath(c.data.InstallDir); err != nil {
 		return errors.NewConfigError("install_dir", c.data.InstallDir, err.Error())
 	}
-	
+
 	// Validate backup path
 	if err := validation.ValidateFilePath(c.data.BackupPath); err != nil {
 		return errors.NewConfigError("backup_path", c.data.BackupPath, err.Error())
 	}
-	
+
 	// Validate private key (basic check)
 	if c.data.PrivateKey == "" {
 		return errors.NewConfigError("private_key", "", "private key cannot be empty")
@@ -565,21 +563,21 @@ func (c *Config) Validate() error {
 	if len(c.data.PrivateKey) < 32 {
 		return errors.NewConfigError("private_key", "", "private key too short (minimum 32 characters)")
 	}
-	
+
 	// Validate version if provided
 	if c.data.Version != "" {
 		if err := validation.ValidateVersion(c.data.Version); err != nil {
 			return errors.NewConfigError("version", c.data.Version, err.Error())
 		}
 	}
-	
+
 	// Validate installer URL if provided
 	if c.data.InstallerURL != "" {
 		if err := validation.ValidateURL(c.data.InstallerURL); err != nil {
 			return errors.NewConfigError("installer_url", c.data.InstallerURL, err.Error())
 		}
 	}
-	
+
 	return nil
 }
 

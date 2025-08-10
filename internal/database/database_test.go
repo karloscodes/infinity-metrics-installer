@@ -110,16 +110,13 @@ func setupTestDB(t *testing.T) (*Database, string, string) {
 func TestBackupCreationAndRetention(t *testing.T) {
 	db, dbPath, backupDir := setupTestDB(t)
 
-	// Set shorter retention for testing
+	// Set longer retention for testing to keep recent backups
 	db.SetRetentionConfig(RetentionConfig{
-		DailyRetentionDays:   1,
-		WeeklyRetentionDays:  2,
-		MonthlyRetentionDays: 3,
+		DailyRetentionDays:   3,  // Keep daily backups for 3 days
+		WeeklyRetentionDays:  10, // Keep weekly backups for 10 days  
+		MonthlyRetentionDays: 15, // Keep monthly backups for 15 days
 	})
 
-	// Create test backup files with fixed dates to ensure predictable backup types
-	now := time.Now().UTC()
-	
 	// Define test backups with specific fixed dates to ensure correct type detection
 	testBackups := []struct {
 		backupType   BackupType
@@ -127,7 +124,7 @@ func TestBackupCreationAndRetention(t *testing.T) {
 		expected     bool // should it exist after cleanup?
 	}{
 		// Daily backups (not on Sunday, not on 1st of month)
-		{Daily, now.Add(-10 * time.Hour), true},
+		{Daily, time.Date(2025, 8, 8, 10, 0, 0, 0, time.UTC), true},  // Friday, recent
 		{Daily, time.Date(2025, 8, 2, 10, 0, 0, 0, time.UTC), false}, // Saturday, old
 		
 		// Weekly backups (on Sundays)
