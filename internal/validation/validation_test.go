@@ -331,3 +331,86 @@ func TestValidationErrorFields(t *testing.T) {
 		t.Error("Expected non-empty message")
 	}
 }
+
+func TestEmailValidationFlow(t *testing.T) {
+	t.Run("AcceptValidBusinessEmail", func(t *testing.T) {
+		email := "admin@company.com"
+		err := ValidateEmail(email)
+		
+		if err != nil {
+			t.Errorf("Expected valid email to be accepted, got error: %v", err)
+		}
+	})
+
+	t.Run("RejectMalformedEmail", func(t *testing.T) {
+		email := "invalid-email"
+		err := ValidateEmail(email)
+		
+		if err == nil {
+			t.Error("Expected malformed email to be rejected")
+		}
+		
+		var validationErr *customerrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Errorf("Expected ValidationError, got %T", err)
+		}
+	})
+
+	t.Run("RejectEmptyEmail", func(t *testing.T) {
+		email := ""
+		err := ValidateEmail(email)
+		
+		if err == nil {
+			t.Error("Expected empty email to be rejected")
+		}
+	})
+}
+
+func TestDomainValidationFlow(t *testing.T) {
+	t.Run("AcceptValidDomain", func(t *testing.T) {
+		domain := "metrics.company.com"
+		err := ValidateDomain(domain)
+		
+		if err != nil {
+			t.Errorf("Expected valid domain to be accepted, got error: %v", err)
+		}
+	})
+
+	t.Run("RejectInvalidDomain", func(t *testing.T) {
+		domain := "invalid..domain"
+		err := ValidateDomain(domain)
+		
+		if err == nil {
+			t.Error("Expected invalid domain to be rejected")
+		}
+	})
+}
+
+func TestPasswordValidationFlow(t *testing.T) {
+	t.Run("AcceptStrongPassword", func(t *testing.T) {
+		password := "SecurePassword123!"
+		err := ValidatePassword(password)
+		
+		if err != nil {
+			t.Errorf("Expected strong password to be accepted, got error: %v", err)
+		}
+	})
+
+	t.Run("RejectWeakPassword", func(t *testing.T) {
+		password := "123"
+		err := ValidatePassword(password)
+		
+		if err == nil {
+			t.Error("Expected weak password to be rejected for security")
+		}
+	})
+
+	t.Run("RejectEmptyPassword", func(t *testing.T) {
+		password := ""
+		err := ValidatePassword(password)
+		
+		if err == nil {
+			t.Error("Expected empty password to be rejected as required")
+		}
+	})
+}

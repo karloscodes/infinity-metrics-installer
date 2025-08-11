@@ -144,6 +144,12 @@ func (i *Installer) Run() error {
 		i.logger.Error("Default user creation failed: %v", err)
 		return fmt.Errorf("failed to create default user: %w", err)
 	}
+	// Install the binary itself for updates and cron jobs
+	if err := i.installBinary(); err != nil {
+		i.logger.Warn("Failed to install binary for updates: %v", err)
+		// Don't fail installation, just warn
+	}
+
 	i.logger.InfoWithTime("Setting up automated updates")
 	cronManager := cron.NewManager(i.logger)
 	if err := cronManager.SetupCronJob(); err != nil {
@@ -154,18 +160,34 @@ func (i *Installer) Run() error {
 	return nil
 }
 
-func (i *Installer) Restore() error {
+// ListBackups returns available database backups
+func (i *Installer) ListBackups() ([]database.BackupFile, error) {
 	backupDir := i.GetBackupDir()
-	mainDBPath := i.GetMainDBPath()
+	return i.database.ListBackups(backupDir)
+}
 
-	i.logger.InfoWithTime("Restoring database from %s to %s", backupDir, mainDBPath)
+// PromptBackupSelection allows user to select from available backups
+func (i *Installer) PromptBackupSelection(backups []database.BackupFile) (string, error) {
+	return i.database.PromptSelection(backups)
+}
+
+// ValidateBackup validates the selected backup file
+func (i *Installer) ValidateBackup(backupPath string) error {
+	return i.database.ValidateBackup(backupPath)
+}
+
+// RestoreFromBackup restores database from a specific backup file
+func (i *Installer) RestoreFromBackup(backupPath string) error {
+	mainDBPath := i.GetMainDBPath()
+	
+	i.logger.InfoWithTime("Restoring database from %s to %s", backupPath, mainDBPath)
 	i.logger.Info("Restoring database...")
 
 	// Show progress for restore operation
 	progressChan := make(chan int, 1)
 	go i.showProgress(progressChan, "Database restore")
 
-	err := i.database.RestoreDatabase(mainDBPath, backupDir)
+	err := i.database.RestoreDatabase(mainDBPath, backupPath)
 	if err != nil {
 		close(progressChan)
 		i.logger.Error("Restore failed: %v", err)
@@ -176,7 +198,6 @@ func (i *Installer) Restore() error {
 	close(progressChan)
 
 	i.logger.Success("Database restored successfully")
-	i.logger.Info("Verify the installation by running: sudo docker ps | grep infinity-metrics")
 	return nil
 }
 
@@ -291,4 +312,34 @@ func (i *Installer) showProgress(progressChan <-chan int, operationName string) 
 			}
 		}
 	}
+}
+
+// installBinary copies the current executable to the system binary path for updates and cron jobs
+func (i *Installer) installBinary() error {
+	if os.Getenv("ENV") == "test" {
+		i.logger.InfoWithTime("Skipping binary installation in test environment")
+		return nil
+	}
+
+	// Get the current executable path
+	currentExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get current executable path: %w", err)
+	}
+
+	i.logger.InfoWithTime("Installing binary from %s to %s", currentExe, i.binaryPath)
+
+	// Read the current executable
+	sourceData, err := os.ReadFile(currentExe)
+	if err != nil {
+		return fmt.Errorf("failed to read source binary: %w", err)
+	}
+
+	// Write to destination
+	if err := os.WriteFile(i.binaryPath, sourceData, 0755); err != nil {
+		return fmt.Errorf("failed to write binary to %s: %w", i.binaryPath, err)
+	}
+
+	i.logger.Success("Binary installed successfully at %s", i.binaryPath)
+	return nil
 }

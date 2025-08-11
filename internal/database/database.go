@@ -26,10 +26,10 @@ const (
 
 // BackupFile represents a database backup file
 type BackupFile struct {
-	name       string
-	path       string
-	backupType BackupType
-	createdAt  time.Time
+	Name       string
+	Path       string
+	BackupType BackupType
+	CreatedAt  time.Time
 }
 
 // RetentionConfig defines the retention period for each backup type
@@ -134,10 +134,10 @@ func (d *Database) cleanupOldBackups(backupDir string) error {
 
 	now := time.Now()
 	for _, backup := range backups {
-		age := now.Sub(backup.createdAt)
+		age := now.Sub(backup.CreatedAt)
 
 		shouldDelete := false
-		switch backup.backupType {
+		switch backup.BackupType {
 		case Daily:
 			shouldDelete = age > dailyRetention
 		case Weekly:
@@ -147,9 +147,13 @@ func (d *Database) cleanupOldBackups(backupDir string) error {
 		}
 
 		if shouldDelete {
-			d.logger.Info("Removing old %s backup: %s (age: %v)", backup.backupType, backup.name, age.Round(time.Hour))
-			if err := os.Remove(backup.path); err != nil {
-				d.logger.Warn("Failed to remove old backup %s: %v", backup.name, err)
+			if d.logger != nil {
+				d.logger.Info("Removing old %s backup: %s (age: %v)", backup.BackupType, backup.Name, age.Round(time.Hour))
+			}
+			if err := os.Remove(backup.Path); err != nil {
+				if d.logger != nil {
+					d.logger.Warn("Failed to remove old backup %s: %v", backup.Name, err)
+				}
 			}
 		}
 	}
@@ -233,17 +237,17 @@ func (d *Database) ListBackups(backupDir string) ([]BackupFile, error) {
 			backupType := determineBackupType(createdAt)
 
 			backups = append(backups, BackupFile{
-				name:       file.Name(),
-				path:       filepath.Join(backupDir, file.Name()),
-				backupType: backupType,
-				createdAt:  createdAt,
+				Name:       file.Name(),
+				Path:       filepath.Join(backupDir, file.Name()),
+				BackupType: backupType,
+				CreatedAt:  createdAt,
 			})
 		}
 	}
 
 	// Sort by creation time descending
 	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].createdAt.After(backups[j].createdAt)
+		return backups[i].CreatedAt.After(backups[j].CreatedAt)
 	})
 
 	return backups, nil
@@ -257,8 +261,8 @@ func (d *Database) PromptSelection(backups []BackupFile) (string, error) {
 
 	d.logger.Info("Available backups:")
 	for i, backup := range backups {
-		info, _ := os.Stat(backup.path)
-		d.logger.Info("%d: %s (size: %d bytes, modified: %s)", i+1, backup.name, info.Size(), info.ModTime().Format(time.RFC1123))
+		info, _ := os.Stat(backup.Path)
+		d.logger.Info("%d: %s (size: %d bytes, modified: %s)", i+1, backup.Name, info.Size(), info.ModTime().Format(time.RFC1123))
 	}
 
 	reader := bufio.NewReader(os.Stdin)
@@ -273,7 +277,7 @@ func (d *Database) PromptSelection(backups []BackupFile) (string, error) {
 		return "", fmt.Errorf("invalid selection: must be a number between 1 and %d", len(backups))
 	}
 
-	return backups[choice-1].path, nil
+	return backups[choice-1].Path, nil
 }
 
 // ValidateBackup checks if a backup file is valid and not corrupted

@@ -53,8 +53,8 @@ func main() {
 		runUpdate(inst, logger, startTime)
 	case "reload":
 		runReload(logger, startTime)
-	case "restore":
-		runRestore(inst, logger, startTime)
+	case "restore-db":
+		runRestoreDB(inst, logger, startTime)
 	case "change-admin-password":
 		if err := runAdminPasswordChange(logger); err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -213,16 +213,66 @@ func runUpdate(inst *installer.Installer, logger *logging.Logger, startTime time
 	logger.Success("Update completed in %s", elapsedTime)
 }
 
-func runRestore(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
-	logger.Info("Running restore...")
-	err := inst.Restore()
+func runRestoreDB(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
+	logger.Info("Starting database restore...")
+	
+	backupDir := inst.GetBackupDir()
+	mainDBPath := inst.GetMainDBPath()
+	
+	// List available backups
+	backups, err := inst.ListBackups()
+	if err != nil {
+		logger.Error("Failed to list backups: %v", err)
+		os.Exit(1)
+	}
+	
+	if len(backups) == 0 {
+		logger.Error("No backups found in %s", backupDir)
+		os.Exit(1)
+	}
+	
+	// Let user select a backup
+	selectedBackup, err := inst.PromptBackupSelection(backups)
+	if err != nil {
+		logger.Error("Backup selection failed: %v", err)
+		os.Exit(1)
+	}
+	
+	// Validate the selected backup
+	if err := inst.ValidateBackup(selectedBackup); err != nil {
+		logger.Error("Backup validation failed: %v", err)
+		os.Exit(1)
+	}
+	
+	// Confirmation prompt
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("⚠️  This will replace your current database with the selected backup.\n")
+	fmt.Printf("   Current database: %s\n", mainDBPath)
+	fmt.Printf("   Selected backup: %s\n", selectedBackup)
+	fmt.Print("Are you sure you want to continue? (yes/no): ")
+	
+	confirmation, err := reader.ReadString('\n')
+	if err != nil {
+		logger.Error("Failed to read confirmation: %v", err)
+		os.Exit(1)
+	}
+	
+	confirmation = strings.TrimSpace(strings.ToLower(confirmation))
+	if confirmation != "yes" && confirmation != "y" {
+		logger.Info("Restore cancelled by user")
+		os.Exit(0)
+	}
+	
+	// Perform the restore
+	err = inst.RestoreFromBackup(selectedBackup)
 	if err != nil {
 		logger.Error("Restore failed: %v", err)
 		os.Exit(1)
 	}
-
+	
 	elapsedTime := time.Since(startTime).Round(time.Second)
-	logger.Success("Restore completed in %s", elapsedTime)
+	logger.Success("Database restored successfully in %s", elapsedTime)
+	logger.Info("Verify the installation by running: sudo docker ps | grep infinity-metrics")
 }
 
 func runReload(logger *logging.Logger, startTime time.Time) {
@@ -310,7 +360,7 @@ func printUsage() {
 	fmt.Println("  install                     Install Infinity Metrics")
 	fmt.Println("  update                      Update an existing installation")
 	fmt.Println("  reload                      Reload containers with latest .env config without backup")
-	fmt.Println("  restore                     Restore the database from last backup")
+	fmt.Println("  restore-db                  Interactively restore database from a backup")
 	fmt.Println("  change-admin-password       Change the admin user password")
 	fmt.Println("  version                     Show version information")
 	fmt.Println("  help                        Show this help message")

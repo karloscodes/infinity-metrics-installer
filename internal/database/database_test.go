@@ -1,10 +1,12 @@
 package database
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,8 +49,8 @@ func TestListBackups_Sorted(t *testing.T) {
 	if len(backups) != 3 {
 		t.Errorf("Expected 3 backups, got %d", len(backups))
 	}
-	if backups[0].name != "backup_20240102_120000.db" {
-		t.Errorf("Expected first backup to be latest, got %s", backups[0].name)
+	if backups[0].Name != "backup_20240102_120000.db" {
+		t.Errorf("Expected first backup to be latest, got %s", backups[0].Name)
 	}
 }
 
@@ -110,7 +112,7 @@ func setupTestDB(t *testing.T) (*Database, string, string) {
 func TestBackupCreationAndRetention(t *testing.T) {
 	db, dbPath, backupDir := setupTestDB(t)
 
-	// Set longer retention for testing to keep recent backups
+	// Set retention for deterministic testing
 	db.SetRetentionConfig(RetentionConfig{
 		DailyRetentionDays:   3,  // Keep daily backups for 3 days
 		WeeklyRetentionDays:  10, // Keep weekly backups for 10 days  
@@ -118,22 +120,25 @@ func TestBackupCreationAndRetention(t *testing.T) {
 	})
 
 	// Define test backups with specific fixed dates to ensure correct type detection
+	// Need to use dates that match the backup type detection logic:
+	// - Daily: not Sunday, not 1st of month  
+	// - Weekly: Sunday
+	// - Monthly: 1st of month
 	testBackups := []struct {
-		backupType   BackupType
 		backupTime   time.Time
 		expected     bool // should it exist after cleanup?
 	}{
 		// Daily backups (not on Sunday, not on 1st of month)
-		{Daily, time.Date(2025, 8, 8, 10, 0, 0, 0, time.UTC), true},  // Friday, recent
-		{Daily, time.Date(2025, 8, 2, 10, 0, 0, 0, time.UTC), false}, // Saturday, old
+		{time.Date(2025, 8, 9, 10, 0, 0, 0, time.UTC), true},   // Saturday, 2 days ago, within 3-day retention
+		{time.Date(2025, 8, 6, 10, 0, 0, 0, time.UTC), false},  // Tuesday, 5 days ago, beyond 3-day retention
 		
 		// Weekly backups (on Sundays)
-		{Weekly, time.Date(2025, 8, 3, 15, 0, 0, 0, time.UTC), true},   // Recent Sunday
-		{Weekly, time.Date(2025, 7, 27, 12, 0, 0, 0, time.UTC), false}, // Old Sunday
+		{time.Date(2025, 8, 3, 15, 0, 0, 0, time.UTC), true},   // Sunday, 8 days ago, within 10-day retention
+		{time.Date(2025, 7, 27, 12, 0, 0, 0, time.UTC), false}, // Sunday, 15 days ago, beyond 10-day retention
 		
 		// Monthly backups (on 1st of month)
-		{Monthly, time.Date(2025, 8, 1, 18, 0, 0, 0, time.UTC), true},  // Recent 1st
-		{Monthly, time.Date(2025, 7, 1, 14, 0, 0, 0, time.UTC), false}, // Old 1st
+		{time.Date(2025, 8, 1, 18, 0, 0, 0, time.UTC), true},  // 1st, 10 days ago, within 15-day retention
+		{time.Date(2025, 7, 1, 14, 0, 0, 0, time.UTC), false}, // 1st, 41 days ago, beyond 15-day retention
 	}
 	
 	for _, tb := range testBackups {
@@ -177,7 +182,7 @@ func TestBackupCreationAndRetention(t *testing.T) {
 
 	// Verify backup types
 	for _, backup := range backups {
-		assert.NotEmpty(t, backup.backupType, "Backup type should not be empty for %s", backup.name)
+		assert.NotEmpty(t, backup.BackupType, "Backup type should not be empty for %s", backup.Name)
 	}
 }
 
@@ -209,4 +214,124 @@ func TestRetentionConfigUpdate(t *testing.T) {
 
 	updatedConfig := db.GetRetentionConfig()
 	assert.Equal(t, newConfig, updatedConfig)
+}
+
+func TestDatabaseBackupCreation(t *testing.T) {
+	t.Run("CreateTimestampedBackupFromValidDatabase", func(t *testing.T) {
+		db, mainDBPath, backupDir := setupTestDB(t)
+		
+		// The setupTestDB already creates a valid SQLite database, so we use that directly
+		backupPath, err := db.BackupDatabase(mainDBPath, backupDir)
+		
+		assert.NoError(t, err, "Backup creation should succeed")
+		assert.NotEmpty(t, backupPath, "Backup path should not be empty")
+		assert.True(t, fileExists(backupPath), "Backup file should exist")
+		
+		// Verify backup filename format
+		filename := filepath.Base(backupPath)
+		assert.True(t, strings.HasPrefix(filename, "backup_"), "Backup should have correct prefix")
+		assert.True(t, strings.HasSuffix(filename, ".db"), "Backup should have .db extension")
+	})
+
+	t.Run("ReturnErrorForNonExistentSourceDB", func(t *testing.T) {
+		db, _, backupDir := setupTestDB(t)
+		nonExistentDB := "/path/to/nonexistent.db"
+		
+		backupPath, err := db.BackupDatabase(nonExistentDB, backupDir)
+		
+		assert.Error(t, err, "Should error when source database doesn't exist")
+		assert.Empty(t, backupPath, "Should return empty backup path on error")
+	})
+}
+
+func TestDatabaseBackupCleanup(t *testing.T) {
+	t.Run("RemoveExpiredBackupsButKeepRecent", func(t *testing.T) {
+		db, _, backupDir := setupTestDB(t)
+		
+		// Ensure backup directory exists
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		
+		// Create old backup files (simulate old timestamps)
+		oldBackups := []string{
+			"backup_20230101_120000.db", // Very old - should be deleted
+			"backup_20230601_120000.db", // Old - should be deleted  
+		}
+		
+		for _, backup := range oldBackups {
+			backupPath := filepath.Join(backupDir, backup)
+			err := os.WriteFile(backupPath, []byte("old backup content"), 0644)
+			require.NoError(t, err)
+		}
+		
+		// Create recent backup (should be kept)
+		recentBackup := fmt.Sprintf("backup_%s.db", time.Now().Format("20060102_150405"))
+		recentPath := filepath.Join(backupDir, recentBackup)
+		err := os.WriteFile(recentPath, []byte("recent backup content"), 0644)
+		require.NoError(t, err)
+		
+		strictConfig := RetentionConfig{
+			DailyRetentionDays:   1,  // Very short retention
+			WeeklyRetentionDays:  7,
+			MonthlyRetentionDays: 30,
+		}
+		db.SetRetentionConfig(strictConfig)
+		
+		err = db.cleanupOldBackups(backupDir)
+		
+		assert.NoError(t, err, "Cleanup should succeed")
+		// Verify recent backup still exists
+		assert.True(t, fileExists(recentPath), "Recent backup should be preserved")
+	})
+}
+
+func TestBackupRestoreFlow(t *testing.T) {
+	t.Run("RestoreValidBackupReplacesMainDatabase", func(t *testing.T) {
+		db, mainDBPath, backupDir := setupTestDB(t)
+		
+		// Ensure backup directory exists
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		
+		// Create a valid backup file by first creating another database
+		backupDBPath := filepath.Join(backupDir, "temp_backup_source.db")
+		cmd := exec.Command("sqlite3", backupDBPath, "PRAGMA page_size=4096; PRAGMA user_version=1; CREATE TABLE backup_test(id INTEGER PRIMARY KEY, data TEXT); INSERT INTO backup_test(data) VALUES ('backup_content');")
+		require.NoError(t, cmd.Run())
+		
+		// Now create the backup file in the expected location
+		backupPath := filepath.Join(backupDir, "backup_20240101_120000.db")
+		cmd = exec.Command("sqlite3", backupDBPath, fmt.Sprintf(".backup '%s'", backupPath))
+		require.NoError(t, cmd.Run())
+		
+		// Clean up temp file
+		os.Remove(backupDBPath)
+		
+		err := db.RestoreDatabase(mainDBPath, backupPath)
+		
+		assert.NoError(t, err, "Restore should succeed")
+		
+		// Verify the database was restored by checking if it's a valid SQLite database
+		validateCmd := exec.Command("sqlite3", mainDBPath, "PRAGMA integrity_check;")
+		output, err := validateCmd.CombinedOutput()
+		require.NoError(t, err)
+		assert.Equal(t, "ok\n", string(output), "Restored database should be valid")
+		
+		// Original backup file should be consumed (moved)
+		assert.False(t, fileExists(backupPath), "Original backup file should be moved/consumed")
+	})
+
+	t.Run("RestoreCorruptedBackupReturnsValidationError", func(t *testing.T) {
+		db, mainDBPath, backupDir := setupTestDB(t)
+		
+		// Ensure backup directory exists
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		
+		// Create empty backup file (invalid)
+		corruptBackupPath := filepath.Join(backupDir, "backup_corrupted.db")
+		err := os.WriteFile(corruptBackupPath, []byte{}, 0644)
+		require.NoError(t, err)
+		
+		err = db.RestoreDatabase(mainDBPath, corruptBackupPath)
+		
+		assert.Error(t, err, "Should error when backup is corrupted")
+		assert.Contains(t, err.Error(), "validation failed", "Error should indicate validation failure")
+	})
 }

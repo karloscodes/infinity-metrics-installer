@@ -166,3 +166,85 @@ func TestCheckSystemRequirements(t *testing.T) {
 	err := checker.CheckSystemRequirements()
 	assert.NoError(t, err)
 }
+
+func TestSystemRequirementsFlow(t *testing.T) {
+	logger := logging.NewLogger(logging.Config{Level: "error", Quiet: true})
+	checker := NewChecker(logger)
+
+	// Save original environment values
+	originalEnv := os.Getenv("ENV")
+	originalSkip := os.Getenv("SKIP_PORT_CHECKING")
+	defer func() {
+		os.Setenv("ENV", originalEnv)
+		os.Setenv("SKIP_PORT_CHECKING", originalSkip)
+	}()
+
+	t.Run("NonRootUserFailsWithRootError", func(t *testing.T) {
+		// Skip if already running as root
+		if os.Geteuid() == 0 {
+			t.Skip("Cannot test non-root behavior when already running as root")
+		}
+
+		os.Setenv("ENV", "")
+		err := checker.CheckSystemRequirements()
+		
+		assert.Error(t, err, "Should fail when not running as root")
+		assert.Contains(t, err.Error(), "root privileges required", "Error should indicate root privileges needed")
+	})
+
+	t.Run("TestEnvironmentSkipsRootCheck", func(t *testing.T) {
+		os.Setenv("ENV", "test")
+		os.Setenv("SKIP_PORT_CHECKING", "1")
+		
+		err := checker.CheckSystemRequirements()
+		
+		assert.NoError(t, err, "Should pass in test environment regardless of user privileges")
+	})
+
+	t.Run("RootUserWithPortCheckingEnabled", func(t *testing.T) {
+		// Skip if not running as root since we need root for this test
+		if os.Geteuid() != 0 {
+			t.Skip("This test requires root privileges to test port checking behavior")
+		}
+
+		os.Setenv("ENV", "")  // Not in test environment
+		os.Setenv("SKIP_PORT_CHECKING", "")  // Enable port checking
+		
+		err := checker.CheckSystemRequirements()
+		
+		// May pass or fail depending on actual port availability
+		if err != nil {
+			// If it fails, should be due to port availability, not root privileges
+			assert.NotContains(t, err.Error(), "root privileges required", "Should not fail on root privileges when running as root")
+		}
+	})
+}
+
+func TestRootPrivilegeChecking(t *testing.T) {
+	logger := logging.NewLogger(logging.Config{Level: "error", Quiet: true})
+	checker := NewChecker(logger)
+
+	// Save original ENV value
+	originalEnv := os.Getenv("ENV")
+	defer os.Setenv("ENV", originalEnv)
+
+	t.Run("ProductionEnvironmentRejectsNonRootUser", func(t *testing.T) {
+		// Skip if already running as root
+		if os.Geteuid() == 0 {
+			t.Skip("Cannot test non-root behavior when already running as root")
+		}
+
+		os.Setenv("ENV", "production")
+		err := checker.checkRootPrivileges()
+		
+		assert.Error(t, err, "Should reject non-root user in production")
+		assert.Contains(t, err.Error(), "root privileges required", "Should explain root requirement")
+	})
+
+	t.Run("TestEnvironmentAllowsAnyUser", func(t *testing.T) {
+		os.Setenv("ENV", "test")
+		err := checker.checkRootPrivileges()
+		
+		assert.NoError(t, err, "Should allow execution in test environment")
+	})
+}

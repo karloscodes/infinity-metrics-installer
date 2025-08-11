@@ -435,3 +435,141 @@ func TestFetchFromServer(t *testing.T) {
 		t.Errorf("FetchFromServer() with empty URL should not fail, got: %v", err)
 	}
 }
+
+func TestConfigurationValidation(t *testing.T) {
+	t.Run("ValidateCompleteConfiguration", func(t *testing.T) {
+		c := NewConfig(testLogger(t))
+		c.data.Domain = "metrics.company.com"
+		c.data.AdminEmail = "admin@company.com"
+		c.data.LicenseKey = "valid-license-key-123"
+		c.data.AdminPassword = "SecurePass123!"
+		c.data.AppImage = "karloscodes/infinity-metrics:latest"
+		c.data.CaddyImage = "caddy:2.7-alpine"
+		c.data.InstallDir = "/opt/infinity-metrics"
+		c.data.BackupPath = "/opt/infinity-metrics/backup"
+		c.data.PrivateKey = "this-is-a-very-long-private-key-that-meets-minimum-requirements"
+		c.data.Version = "v1.0.0"
+		c.data.InstallerURL = "https://company.com/installer"
+		
+		err := c.Validate()
+		
+		if err != nil {
+			t.Errorf("Expected complete configuration to be valid, got error: %v", err)
+		}
+	})
+
+	t.Run("ValidateRejectsMissingDomain", func(t *testing.T) {
+		c := NewConfig(testLogger(t))
+		c.data.AdminEmail = "admin@company.com"
+		c.data.LicenseKey = "valid-license-key-123"
+		c.data.AdminPassword = "SecurePass123!"
+		// Domain is intentionally missing
+		
+		err := c.Validate()
+		
+		if err == nil {
+			t.Error("Expected validation to fail when domain is missing")
+		}
+		if err != nil && !strings.Contains(err.Error(), "domain") {
+			t.Errorf("Expected error to mention domain, got: %v", err)
+		}
+	})
+
+	t.Run("ValidateRejectsMissingAdminEmail", func(t *testing.T) {
+		c := NewConfig(testLogger(t))
+		c.data.Domain = "metrics.company.com"
+		c.data.LicenseKey = "valid-license-key-123"
+		c.data.AdminPassword = "SecurePass123!"
+		// AdminEmail is intentionally missing
+		
+		err := c.Validate()
+		
+		if err == nil {
+			t.Error("Expected validation to fail when admin email is missing")
+		}
+		if err != nil && !strings.Contains(err.Error(), "email") {
+			t.Errorf("Expected error to mention email, got: %v", err)
+		}
+	})
+}
+
+func TestConfigurationDefaults(t *testing.T) {
+	t.Run("NewConfigurationSetsDefaults", func(t *testing.T) {
+		c := NewConfig(testLogger(t))
+		data := c.GetData()
+		
+		expectedDefaults := map[string]string{
+			"AppImage":   "karloscodes/infinity-metrics-beta:latest",
+			"CaddyImage": "caddy:2.7-alpine",
+			"InstallDir": "/opt/infinity-metrics",
+		}
+		
+		if data.AppImage != expectedDefaults["AppImage"] {
+			t.Errorf("Expected default AppImage %s, got %s", expectedDefaults["AppImage"], data.AppImage)
+		}
+		if data.CaddyImage != expectedDefaults["CaddyImage"] {
+			t.Errorf("Expected default CaddyImage %s, got %s", expectedDefaults["CaddyImage"], data.CaddyImage)
+		}
+		if data.InstallDir != expectedDefaults["InstallDir"] {
+			t.Errorf("Expected default InstallDir %s, got %s", expectedDefaults["InstallDir"], data.InstallDir)
+		}
+		
+		// Private key is generated when needed, not by default
+		t.Logf("Private key status: length=%d", len(data.PrivateKey))
+	})
+}
+
+func TestEnvironmentConfigCollection(t *testing.T) {
+	// Save original environment
+	originalDomain := os.Getenv("DOMAIN")
+	originalEmail := os.Getenv("ADMIN_EMAIL")
+	originalLicense := os.Getenv("LICENSE_KEY")
+	originalPassword := os.Getenv("ADMIN_PASSWORD")
+	
+	defer func() {
+		// Restore original environment
+		os.Setenv("DOMAIN", originalDomain)
+		os.Setenv("ADMIN_EMAIL", originalEmail)
+		os.Setenv("LICENSE_KEY", originalLicense)
+		os.Setenv("ADMIN_PASSWORD", originalPassword)
+	}()
+
+	t.Run("PopulatesFromEnvironmentVariables", func(t *testing.T) {
+		os.Setenv("DOMAIN", "env.company.com")
+		os.Setenv("ADMIN_EMAIL", "admin@env.com")
+		os.Setenv("LICENSE_KEY", "env-license-123")
+		os.Setenv("ADMIN_PASSWORD", "EnvPassword123!")
+		
+		c := NewConfig(testLogger(t))
+		err := c.collectFromEnvironment()
+		
+		if err != nil {
+			t.Errorf("Expected environment collection to succeed, got error: %v", err)
+		}
+		
+		data := c.GetData()
+		if data.Domain != "env.company.com" {
+			t.Errorf("Expected domain from environment, got %s", data.Domain)
+		}
+		if data.AdminEmail != "admin@env.com" {
+			t.Errorf("Expected admin email from environment, got %s", data.AdminEmail)
+		}
+		if data.LicenseKey != "env-license-123" {
+			t.Errorf("Expected license key from environment, got %s", data.LicenseKey)
+		}
+	})
+
+	t.Run("ReturnsErrorForMissingEnvironmentVars", func(t *testing.T) {
+		os.Unsetenv("DOMAIN")
+		os.Unsetenv("ADMIN_EMAIL")
+		os.Unsetenv("LICENSE_KEY")
+		os.Unsetenv("ADMIN_PASSWORD")
+		
+		c := NewConfig(testLogger(t))
+		err := c.collectFromEnvironment()
+		
+		if err == nil {
+			t.Error("Expected error when required environment variables are missing")
+		}
+	})
+}

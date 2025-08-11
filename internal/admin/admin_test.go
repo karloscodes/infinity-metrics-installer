@@ -103,3 +103,93 @@ func TestChangeAdminPassword_FailsExecutor(t *testing.T) {
 		t.Fatalf("expected 1 command recorded, got %d", len(fe.cmds))
 	}
 }
+
+func TestAdminUserCreation(t *testing.T) {
+	t.Run("CreateUserWithValidCredentials", func(t *testing.T) {
+		mgr, fe := makeFakeManager()
+		email := "admin@company.com"
+		password := "SecurePassword123"
+		
+		err := mgr.CreateAdminUser(email, password)
+		
+		if err != nil {
+			t.Errorf("Expected admin user creation to succeed, got error: %v", err)
+		}
+		
+		expectedCmd := [][]string{{"/app/imctl", "create-admin-user", email, password}}
+		if !reflect.DeepEqual(fe.cmds, expectedCmd) {
+			t.Errorf("Expected create-admin-user command, got: %v", fe.cmds)
+		}
+	})
+
+	t.Run("CreateUserFailsOnSystemError", func(t *testing.T) {
+		mgr, fe := makeFakeManager()
+		fe.failAfter = 1
+		
+		err := mgr.CreateAdminUser("admin@test.com", "password123")
+		
+		if err == nil {
+			t.Error("Expected admin user creation to fail when system fails")
+		}
+	})
+}
+
+func TestAdminPasswordManagement(t *testing.T) {
+	t.Run("ChangePasswordExecutesCorrectCommand", func(t *testing.T) {
+		mgr, fe := makeFakeManager()
+		email := "admin@company.com"
+		newPassword := "NewSecurePassword456"
+		
+		err := mgr.ChangeAdminPassword(email, newPassword)
+		
+		if err != nil {
+			t.Errorf("Expected password change to succeed, got error: %v", err)
+		}
+		
+		expectedCmd := [][]string{{"/app/imctl", "change-admin-password", email, newPassword}}
+		if !reflect.DeepEqual(fe.cmds, expectedCmd) {
+			t.Errorf("Expected change-admin-password command, got: %v", fe.cmds)
+		}
+	})
+
+	t.Run("ChangePasswordFailsOnSystemError", func(t *testing.T) {
+		mgr, fe := makeFakeManager()
+		fe.failAfter = 1
+		
+		err := mgr.ChangeAdminPassword("admin@test.com", "newpassword")
+		
+		if err == nil {
+			t.Error("Expected password change to fail when system fails")
+		}
+	})
+}
+
+func TestAdminWorkflow(t *testing.T) {
+	t.Run("InstallationFlowCreateUserThenChangePassword", func(t *testing.T) {
+		mgr, fe := makeFakeManager()
+		email := "admin@company.com"
+		initialPassword := "InitialPass123"
+		newPassword := "UpdatedPass456"
+		
+		// Create admin during installation
+		err1 := mgr.CreateAdminUser(email, initialPassword)
+		if err1 != nil {
+			t.Fatalf("Admin creation failed: %v", err1)
+		}
+		
+		// Later change password
+		err2 := mgr.ChangeAdminPassword(email, newPassword)
+		if err2 != nil {
+			t.Fatalf("Password change failed: %v", err2)
+		}
+		
+		expectedCmds := [][]string{
+			{"/app/imctl", "create-admin-user", email, initialPassword},
+			{"/app/imctl", "change-admin-password", email, newPassword},
+		}
+		
+		if !reflect.DeepEqual(fe.cmds, expectedCmds) {
+			t.Errorf("Expected admin workflow commands, got: %v", fe.cmds)
+		}
+	})
+}
