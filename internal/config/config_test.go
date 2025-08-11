@@ -363,6 +363,39 @@ func TestCheckDNSAndStoreWarnings(t *testing.T) {
 	}
 }
 
+func TestCheckDNSAndStoreWarningsSkipsLocalhost(t *testing.T) {
+	c := NewConfig(testLogger(t))
+
+	// Test with localhost domain (should skip checks and have no warnings)
+	c.CheckDNSAndStoreWarnings("localhost")
+
+	if c.HasDNSWarnings() {
+		t.Error("CheckDNSAndStoreWarnings() should not generate warnings for localhost")
+	}
+
+	warnings := c.GetDNSWarnings()
+	if len(warnings) != 0 {
+		t.Errorf("CheckDNSAndStoreWarnings() should not add warnings for localhost, got %d warnings: %v", len(warnings), warnings)
+	}
+
+	// Test with other localhost variants
+	localhostVariants := []string{
+		"LOCALHOST",
+		"127.0.0.1",
+		"::1",
+		"localhost:8080",
+		"app.localhost",
+		"localhost.localdomain",
+	}
+
+	for _, variant := range localhostVariants {
+		c.CheckDNSAndStoreWarnings(variant)
+		if c.HasDNSWarnings() {
+			t.Errorf("CheckDNSAndStoreWarnings() should not generate warnings for localhost variant: %s", variant)
+		}
+	}
+}
+
 func TestCollectFromEnvironment(t *testing.T) {
 	c := NewConfig(testLogger(t))
 

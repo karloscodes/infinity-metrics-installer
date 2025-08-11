@@ -583,6 +583,13 @@ func (c *Config) Validate() error {
 
 // CheckDNSAndStoreWarnings checks DNS configuration and stores warnings instead of blocking
 func (c *Config) CheckDNSAndStoreWarnings(domain string) {
+	// Skip DNS checks for localhost - no DNS resolution needed
+	if isLocalhostDomain(domain) {
+		fmt.Printf("🏠 Skipping DNS checks for localhost domain: %s\n", domain)
+		c.data.DNSWarnings = []string{}
+		return
+	}
+
 	fmt.Printf("🔍 Checking DNS configuration for %s...\n", domain)
 
 	// Clear any existing warnings
@@ -802,4 +809,35 @@ func (c *Config) fetchConfigJSON(url string) error {
 
 	c.logger.Success("Applied config.json from release")
 	return nil
+}
+
+// isLocalhostDomain checks if the domain is localhost or a localhost variant
+func isLocalhostDomain(domain string) bool {
+	// Check for common localhost variants
+	localhostDomains := []string{
+		"localhost",
+		"127.0.0.1",
+		"::1",
+		"0.0.0.0",
+		"localhost.localdomain",
+	}
+
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	for _, localhost := range localhostDomains {
+		if domain == localhost {
+			return true
+		}
+	}
+
+	// Check for localhost with port (e.g., localhost:8080)
+	if strings.HasPrefix(domain, "localhost:") {
+		return true
+	}
+
+	// Check for localhost subdomains (e.g., app.localhost, test.localhost)
+	if strings.HasSuffix(domain, ".localhost") {
+		return true
+	}
+
+	return false
 }

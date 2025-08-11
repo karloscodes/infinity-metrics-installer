@@ -90,3 +90,37 @@ func TestDNSValidationNonBlocking(t *testing.T) {
 	// continues after displaying DNS warnings
 	t.Log("✅ DNS validation is non-blocking - installation can continue with warnings")
 }
+
+func TestIsLocalhostDomain(t *testing.T) {
+	tests := []struct {
+		name     string
+		domain   string
+		expected bool
+	}{
+		{"localhost", "localhost", true},
+		{"localhost with uppercase", "LOCALHOST", true},
+		{"localhost with whitespace", "  localhost  ", true},
+		{"localhost with port", "localhost:8080", true},
+		{"localhost with port 443", "localhost:443", true},
+		{"localhost subdomain", "app.localhost", true},
+		{"localhost subdomain complex", "test.api.localhost", true},
+		{"127.0.0.1", "127.0.0.1", true},
+		{"IPv6 localhost", "::1", true},
+		{"0.0.0.0", "0.0.0.0", true},
+		{"localhost.localdomain", "localhost.localdomain", true},
+		{"real domain", "example.com", false},
+		{"subdomain of real domain", "app.example.com", false},
+		{"domain containing localhost", "mylocalhost.com", false},
+		{"domain ending with localhost", "notlocalhost", false},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isLocalhostDomain(tt.domain)
+			if result != tt.expected {
+				t.Errorf("isLocalhostDomain(%q) = %v, expected %v", tt.domain, result, tt.expected)
+			}
+		})
+	}
+}
