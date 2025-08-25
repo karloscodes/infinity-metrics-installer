@@ -15,6 +15,16 @@ import (
 	"infinity-metrics-installer/internal/logging"
 )
 
+// ---- Clock abstraction (for deterministic tests) ----
+
+type Clock interface {
+	Now() time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
 // BackupType represents the type of backup (daily, weekly, monthly)
 type BackupType string
 
@@ -52,6 +62,7 @@ func DefaultRetentionConfig() RetentionConfig {
 type Database struct {
 	logger    *logging.Logger
 	retention RetentionConfig
+	clock     Clock
 }
 
 // NewDatabase creates a new Database instance
@@ -59,6 +70,7 @@ func NewDatabase(logger *logging.Logger) *Database {
 	return &Database{
 		logger:    logger,
 		retention: DefaultRetentionConfig(),
+		clock:     realClock{},
 	}
 }
 
@@ -108,7 +120,6 @@ func determineBackupType(createdAt time.Time) BackupType {
 	return Daily
 }
 
-// cleanupOldBackups removes old backups according to retention policy
 // SetRetentionConfig updates the retention configuration
 func (d *Database) SetRetentionConfig(config RetentionConfig) {
 	d.retention = config
@@ -132,7 +143,7 @@ func (d *Database) cleanupOldBackups(backupDir string) error {
 	weeklyRetention := time.Duration(d.retention.WeeklyRetentionDays) * 24 * time.Hour
 	monthlyRetention := time.Duration(d.retention.MonthlyRetentionDays) * 24 * time.Hour
 
-	now := time.Now()
+	now := d.clock.Now()
 	for _, backup := range backups {
 		age := now.Sub(backup.CreatedAt)
 
@@ -173,8 +184,8 @@ func (d *Database) BackupDatabase(dbPath, backupDir string) (string, error) {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// Generate a timestamped backup filename
-	timestamp := time.Now().Format("20060102_150405")
+	// Generate a timestamped backup filename (use injected clock for determinism in tests)
+	timestamp := d.clock.Now().Format("20060102_150405")
 	backupFile := filepath.Join(backupDir, fmt.Sprintf("backup_%s.db", timestamp))
 
 	d.logger.Info("Creating backup of %s", dbPath)
@@ -195,13 +206,13 @@ func (d *Database) BackupDatabase(dbPath, backupDir string) (string, error) {
 
 	// Verify the backup has content
 	if backupInfo.Size() == 0 {
-		os.Remove(backupFile) // Clean up empty backup
+		_ = os.Remove(backupFile) // Clean up empty backup
 		return "", fmt.Errorf("backup file is empty")
 	}
 
 	// Validate the backup
 	if err := d.ValidateBackup(backupFile); err != nil {
-		os.Remove(backupFile) // Clean up invalid backup
+		_ = os.Remove(backupFile) // Clean up invalid backup
 		return "", fmt.Errorf("backup validation failed: %w", err)
 	}
 
@@ -229,7 +240,9 @@ func (d *Database) ListBackups(backupDir string) ([]BackupFile, error) {
 			timePart := strings.TrimPrefix(strings.TrimSuffix(file.Name(), ".db"), "backup_")
 			createdAt, err := time.Parse("20060102_150405", timePart)
 			if err != nil {
-				d.logger.Warn("Skipping backup with invalid timestamp: %s", file.Name())
+				if d.logger != nil {
+					d.logger.Warn("Skipping backup with invalid timestamp: %s", file.Name())
+				}
 				continue
 			}
 
@@ -297,18 +310,24 @@ func (d *Database) ValidateBackup(backupFile string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		d.logger.Warn("SQLite integrity check failed: %s", stderr.String())
+		if d.logger != nil {
+			d.logger.Warn("SQLite integrity check failed: %s", stderr.String())
+		}
 		return fmt.Errorf("backup may be corrupted: %w", err)
 	}
 
 	// Check the output - it should be "ok" for a valid database
 	output := strings.TrimSpace(stdout.String())
 	if output != "ok" {
-		d.logger.Warn("SQLite integrity check returned issues: %s", output)
+		if d.logger != nil {
+			d.logger.Warn("SQLite integrity check returned issues: %s", output)
+		}
 		return fmt.Errorf("backup integrity issues detected")
 	}
 
-	d.logger.Debug("Backup file %s validated successfully", backupFile)
+	if d.logger != nil {
+		d.logger.Debug("Backup file %s validated successfully", backupFile)
+	}
 	return nil
 }
 
@@ -320,24 +339,32 @@ func (d *Database) RestoreDatabase(mainDBPath, backupPath string) error {
 	}
 
 	// Backup current DB (safety net)
-	currentBackup := mainDBPath + ".bak." + time.Now().Format("20060102150405")
+	currentBackup := mainDBPath + ".bak." + d.clock.Now().Format("20060102150405")
 	if _, err := os.Stat(mainDBPath); err == nil {
-		d.logger.Info("Backing up current database to %s", currentBackup)
+		if d.logger != nil {
+			d.logger.Info("Backing up current database to %s", currentBackup)
+		}
 		if err := os.Rename(mainDBPath, currentBackup); err != nil {
 			return fmt.Errorf("backup current DB: %w", err)
 		}
 	}
 
 	// Restore selected backup
-	d.logger.Info("Restoring %s to %s", backupPath, mainDBPath)
+	if d.logger != nil {
+		d.logger.Info("Restoring %s to %s", backupPath, mainDBPath)
+	}
 	if err := os.Rename(backupPath, mainDBPath); err != nil {
 		// Attempt rollback
 		if err2 := os.Rename(currentBackup, mainDBPath); err2 != nil {
-			d.logger.Error("Rollback failed: %v", err2)
+			if d.logger != nil {
+				d.logger.Error("Rollback failed: %v", err2)
+			}
 		}
 		return fmt.Errorf("restore backup: %w", err)
 	}
 
-	d.logger.Info("Database restored successfully from %s", backupPath)
+	if d.logger != nil {
+		d.logger.Info("Database restored successfully from %s", backupPath)
+	}
 	return nil
 }
