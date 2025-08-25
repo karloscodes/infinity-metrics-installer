@@ -241,6 +241,12 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: License key cannot be empty.")
 			continue
 		}
+		
+		// Validate license key format immediately
+		if err := validation.ValidateLicenseKey(c.data.LicenseKey); err != nil {
+			fmt.Printf("Error: %s\n", err.Error())
+			continue
+		}
 		break
 	}
 
@@ -477,6 +483,11 @@ func (c *Config) SaveToFile(filename string) error {
 // GetData returns the config data
 func (c *Config) GetData() ConfigData {
 	return c.data
+}
+
+// SetData updates the config data
+func (c *Config) SetData(data ConfigData) {
+	c.data = data
 }
 
 // SetCaddyImage sets the CaddyImage field in ConfigData

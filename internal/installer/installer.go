@@ -1,10 +1,12 @@
 package installer
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"infinity-metrics-installer/internal/admin"
@@ -13,6 +15,7 @@ import (
 	"infinity-metrics-installer/internal/database"
 	"infinity-metrics-installer/internal/docker"
 	"infinity-metrics-installer/internal/logging"
+	"infinity-metrics-installer/internal/requirements"
 )
 
 const (
@@ -62,6 +65,231 @@ func (i *Installer) RunWithConfig(cfg *config.Config) error {
 	return i.Run()
 }
 
+// RunCompleteInstallation runs the complete installation process with proper coordination
+func (i *Installer) RunCompleteInstallation() error {
+	totalSteps := 7
+
+	// Step 1: Display welcome message and collect ALL user input upfront
+	i.displayWelcomeMessage()
+	fmt.Println("Please provide the required configuration details:")
+	reader := bufio.NewReader(os.Stdin)
+	i.config = config.NewConfig(i.logger)
+	if err := i.config.CollectFromUser(reader); err != nil {
+		return fmt.Errorf("failed to collect configuration: %w", err)
+	}
+
+	// Step 2: Validate system requirements (no system changes yet)
+	i.logger.Info("Step 1/%d: Checking system requirements", totalSteps)
+	checker := requirements.NewChecker(i.logger)
+	if err := checker.CheckSystemRequirements(); err != nil {
+		return fmt.Errorf("system requirements check failed: %w", err)
+	}
+	i.logger.Success("System requirements verified")
+
+	// Step 3: Install SQLite
+	i.logger.Info("Step 2/%d: Installing SQLite", totalSteps)
+	if err := i.database.EnsureSQLiteInstalled(); err != nil {
+		return fmt.Errorf("failed to install SQLite: %w", err)
+	}
+	i.logger.Success("SQLite installed")
+
+	// Step 4: Install Docker
+	i.logger.Info("Step 3/%d: Installing Docker", totalSteps)
+	progressChan := make(chan int, 1)
+	go i.showProgress(progressChan, "Docker installation")
+	if err := i.docker.EnsureInstalled(); err != nil {
+		close(progressChan)
+		return fmt.Errorf("failed to install Docker: %w", err)
+	}
+	progressChan <- 100
+	close(progressChan)
+	i.logger.Success("Docker installed")
+
+	// Step 5: Configure system
+	i.logger.Info("Step 4/%d: Configuring system", totalSteps)
+	if err := i.configureSystem(); err != nil {
+		return fmt.Errorf("failed to configure system: %w", err)
+	}
+	i.logger.Success("System configured")
+
+	// Step 6: Deploy application
+	i.logger.Info("Step 5/%d: Deploying application", totalSteps)
+	deployProgressChan := make(chan int, 1)
+	go i.showProgress(deployProgressChan, "Application deployment")
+	if err := i.docker.Deploy(i.config); err != nil {
+		close(deployProgressChan)
+		return fmt.Errorf("failed to deploy application: %w", err)
+	}
+	deployProgressChan <- 100
+	close(deployProgressChan)
+	i.logger.Success("Application deployed")
+
+	// Step 7: Setup admin user and maintenance
+	i.logger.Info("Step 6/%d: Setting up admin user and maintenance", totalSteps)
+	if err := i.setupUserAndMaintenance(); err != nil {
+		return fmt.Errorf("failed to setup user and maintenance: %w", err)
+	}
+	i.logger.Success("Admin user and maintenance configured")
+
+	// Step 8: Verify installation
+	i.logger.Info("Step 7/%d: Verifying installation", totalSteps)
+	if _, err := i.VerifyInstallation(); err != nil {
+		return fmt.Errorf("installation verification failed: %w", err)
+	}
+	i.logger.Success("Installation verified")
+
+	return nil
+}
+
+// displayWelcomeMessage shows the initial welcome and requirements message
+func (i *Installer) displayWelcomeMessage() {
+	fmt.Println("🚀 Welcome to Infinity Metrics Installer!")
+	fmt.Println()
+	fmt.Println("📋 System Requirements:")
+	fmt.Println("   • Ports 80 and 443 must be available (required for HTTP/HTTPS and SSL)")
+	fmt.Println("   • Root privileges (run with sudo)")
+	fmt.Println("   • Internet connection for downloading components")
+	fmt.Println()
+	fmt.Println("📋 DNS Configuration (Optional but Recommended):")
+	fmt.Println("   • If you set up A/AAAA DNS records for your domain BEFORE installation,")
+	fmt.Println("     the installer will automatically configure SSL certificates.")
+	fmt.Println("   • You can also configure DNS records later, but SSL setup won't be immediate.")
+	fmt.Println("   • The system will work either way - SSL will be configured automatically")
+	fmt.Println("     once DNS propagation is complete.")
+	fmt.Println()
+	fmt.Println("🔒 SSL Certificate Information:")
+	fmt.Println("   • SSL certificates are provided by Let's Encrypt with automatic renewal")
+	fmt.Println("   • If SSL setup fails initially, the system will automatically retry, adding some delays.")
+	fmt.Println("   • Let's Encrypt has rate limits to prevent abuse (see: https://letsencrypt.org/docs/rate-limits/)")
+	fmt.Println()
+}
+
+// configureSystem handles all configuration-related tasks
+func (i *Installer) configureSystem() error {
+	data := i.config.GetData()
+	
+	// Create installation directory
+	if err := i.createInstallDir(data.InstallDir); err != nil {
+		return fmt.Errorf("failed to create install dir: %w", err)
+	}
+	
+	// Handle .env file configuration
+	envFile := filepath.Join(data.InstallDir, ".env")
+	if _, err := os.Stat(envFile); os.IsNotExist(err) {
+		// No existing .env file - save the user-provided configuration
+		if err := i.config.SaveToFile(envFile); err != nil {
+			return fmt.Errorf("failed to save config to %s: %w", envFile, err)
+		}
+	} else {
+		// Existing .env file found - preserve only system-generated values
+		if err := i.updateExistingConfig(envFile); err != nil {
+			return fmt.Errorf("failed to update existing config: %w", err)
+		}
+	}
+	
+	// Fetch server configuration
+	if err := i.config.FetchFromServer(""); err != nil {
+		i.logger.Warn("Using defaults due to server config fetch failure: %v", err)
+	} else {
+		i.logger.Debug("Server configuration fetched")
+	}
+	
+	// Validate final configuration
+	if err := i.config.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+	
+	return nil
+}
+
+// updateExistingConfig preserves system values but uses fresh user input
+func (i *Installer) updateExistingConfig(envFile string) error {
+	i.logger.InfoWithTime("Found existing .env file at %s", envFile)
+	oldConfig := config.NewConfig(i.logger)
+	if err := oldConfig.LoadFromFile(envFile); err != nil {
+		return fmt.Errorf("failed to load existing config from %s: %w", envFile, err)
+	}
+	
+	// Preserve only the private key from old config, use fresh user input for everything else
+	oldData := oldConfig.GetData()
+	currentData := i.config.GetData()
+	if oldData.PrivateKey != "" {
+		// Update config with preserved private key
+		preservedData := currentData
+		preservedData.PrivateKey = oldData.PrivateKey
+		newConfig := config.NewConfig(i.logger)
+		newConfig.SetData(preservedData)
+		i.config = newConfig
+	}
+	
+	// Save the updated configuration (fresh user input + preserved private key)
+	if err := i.config.SaveToFile(envFile); err != nil {
+		return fmt.Errorf("failed to save updated config to %s: %w", envFile, err)
+	}
+	i.logger.InfoWithTime("Updated configuration with fresh user input")
+	
+	return nil
+}
+
+// setupUserAndMaintenance handles admin user creation and maintenance setup
+func (i *Installer) setupUserAndMaintenance() error {
+	// Create admin user
+	if err := i.createDefaultUser(); err != nil {
+		return fmt.Errorf("failed to create admin user: %w", err)
+	}
+	
+	// Install binary for updates (non-critical)
+	if err := i.installBinary(); err != nil {
+		i.logger.Warn("Failed to install binary for updates: %v", err)
+		// Continue anyway - this is not critical for basic functionality
+	}
+	
+	// Setup cron job for automatic updates
+	cronManager := cron.NewManager(i.logger)
+	if err := cronManager.SetupCronJob(); err != nil {
+		return fmt.Errorf("failed to setup cron: %w", err)
+	}
+	
+	return nil
+}
+
+// DisplayCompletionMessage shows the final completion message with DNS warnings if needed
+func (i *Installer) DisplayCompletionMessage() {
+	// DNS warnings (if any)
+	if i.config.HasDNSWarnings() {
+		fmt.Println("\n\033[1m⚠️  DNS CONFIGURATION REQUIRED\033[0m")
+		fmt.Println(strings.Repeat("-", 40))
+		fmt.Println("The following DNS issues were detected during installation:")
+		for _, warning := range i.config.GetDNSWarnings() {
+			if strings.HasPrefix(warning, "Suggestion:") {
+				fmt.Printf("   💡 %s\n", warning[11:])
+			} else {
+				fmt.Printf("   • %s\n", warning)
+			}
+		}
+		fmt.Println("\n🛠️  NEXT STEPS:")
+		data := i.config.GetData()
+		fmt.Printf("   1. Configure DNS: Add A/AAAA record for %s pointing to this server\n", data.Domain)
+		fmt.Println("   2. Wait for DNS propagation (up to 24 hours)")
+		fmt.Printf("   3. Test access: https://%s\n", data.Domain)
+		fmt.Println("   4. Monitor logs: sudo tail -f /opt/infinity-metrics/logs/caddy.log")
+		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
+		fmt.Println("📋 SSL setup might not be immediate due to Let's Encrypt retries.")
+	}
+
+	// Final success message with dashboard access information
+	fmt.Println()
+	fmt.Println("🎉 Installation Complete!")
+	fmt.Println("═══════════════════════════")
+	data := i.config.GetData()
+	fmt.Printf("🌐 Dashboard URL: https://%s\n", data.Domain)
+	fmt.Printf("📧 Admin Email: %s\n", data.AdminEmail)
+	fmt.Printf("🔑 Use the password you set during installation to log in\n")
+	fmt.Println()
+	fmt.Println("🚀 Your Infinity Metrics installation is ready!")
+	fmt.Println("Thank you for choosing Infinity Metrics for your analytics needs.")
+}
+
 func (i *Installer) Run() error {
 	totalSteps := 6
 
@@ -101,14 +329,36 @@ func (i *Installer) Run() error {
 	}
 	envFile := filepath.Join(data.InstallDir, ".env")
 	if _, err := os.Stat(envFile); os.IsNotExist(err) {
+		// No existing .env file - save the user-provided configuration
 		if err := i.config.SaveToFile(envFile); err != nil {
 			return fmt.Errorf("failed to save config to %s: %w", envFile, err)
 		}
 	} else {
-		i.logger.InfoWithTime("Loading existing configuration from %s", envFile)
-		if err := i.config.LoadFromFile(envFile); err != nil {
-			return fmt.Errorf("failed to load config from %s: %w", envFile, err)
+		// Existing .env file found - preserve only system-generated values (like private key)
+		// but use fresh user-provided values for domain, email, and license
+		i.logger.InfoWithTime("Found existing .env file at %s", envFile)
+		oldConfig := config.NewConfig(i.logger)
+		if err := oldConfig.LoadFromFile(envFile); err != nil {
+			return fmt.Errorf("failed to load existing config from %s: %w", envFile, err)
 		}
+		
+		// Preserve only the private key from old config, use fresh user input for everything else
+		oldData := oldConfig.GetData()
+		currentData := i.config.GetData()
+		if oldData.PrivateKey != "" {
+			// Update config with preserved private key
+			preservedData := currentData
+			preservedData.PrivateKey = oldData.PrivateKey
+			newConfig := config.NewConfig(i.logger)
+			newConfig.SetData(preservedData)
+			i.config = newConfig
+		}
+		
+		// Save the updated configuration (fresh user input + preserved private key)
+		if err := i.config.SaveToFile(envFile); err != nil {
+			return fmt.Errorf("failed to save updated config to %s: %w", envFile, err)
+		}
+		i.logger.InfoWithTime("Updated configuration with fresh user input")
 	}
 
 	i.logger.Info("Fetching server configuration...")

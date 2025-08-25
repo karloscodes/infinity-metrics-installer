@@ -22,7 +22,7 @@ IN_GITHUB_ACTIONS := $(if $(GITHUB_ACTIONS),true,false)
 MULTIPASS_INSTALLED := $(shell command -v multipass 2> /dev/null)
 
 # Build targets
-.PHONY: all build clean test test-local test-ci test-short lint deps help build-linux install-multipass start-test-vm test-vm
+.PHONY: all build build-current clean test test-local test-ci test-short lint deps help build-linux install-multipass start-test-vm test-vm
 
 all: test build
 
@@ -34,6 +34,11 @@ build:
 	mkdir -p $(BINARY_DIR)
 	$(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	chmod +x $(BINARY_DIR)/$(BINARY_NAME)
+
+build-current: 
+	mkdir -p $(BINARY_DIR)
+	$(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME)-current $(MAIN_PATH)
+	chmod +x $(BINARY_DIR)/$(BINARY_NAME)-current
 
 build-linux:
 	mkdir -p $(BINARY_DIR)
@@ -151,6 +156,7 @@ test-vm:
 help:
 	@echo "Available targets:"
 	@echo "  build         - Build the binary"
+	@echo "  build-current - Build current development binary for testing"
 	@echo "  build-linux   - Build Linux binaries for both architectures"
 	@echo "  clean         - Clean build artifacts"
 	@echo "  test          - Run all tests"

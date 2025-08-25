@@ -11,11 +11,9 @@ import (
 	"golang.org/x/term"
 
 	"infinity-metrics-installer/internal/admin"
-	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
-	"infinity-metrics-installer/internal/requirements"
 	"infinity-metrics-installer/internal/updater"
 	"infinity-metrics-installer/internal/validation"
 )
@@ -100,100 +98,18 @@ func initLogging() *logging.Logger {
 func runInstall(inst *installer.Installer, logger *logging.Logger, startTime time.Time) {
 	logger.Debug("Initializing installation environment")
 
-	// Welcome message with DNS information
-	fmt.Println("🚀 Welcome to Infinity Metrics Installer!")
-	fmt.Println()
-	fmt.Println("📋 System Requirements:")
-	fmt.Println("   • Ports 80 and 443 must be available (required for HTTP/HTTPS and SSL)")
-	fmt.Println("   • Root privileges (run with sudo)")
-	fmt.Println("   • Internet connection for downloading components")
-	fmt.Println()
-	fmt.Println("📋 DNS Configuration (Optional but Recommended):")
-	fmt.Println("   • If you set up A/AAAA DNS records for your domain BEFORE installation,")
-	fmt.Println("     the installer will automatically configure SSL certificates.")
-	fmt.Println("   • You can also configure DNS records later, but SSL setup won't be immediate.")
-	fmt.Println("   • The system will work either way - SSL will be configured automatically")
-	fmt.Println("     once DNS propagation is complete.")
-	fmt.Println()
-	fmt.Println("🔒 SSL Certificate Information:")
-	fmt.Println("   • SSL certificates are provided by Let's Encrypt with automatic renewal")
-	fmt.Println("   • If SSL setup fails initially, the system will automatically retry, adding some delays.")
-	fmt.Println("   • Let's Encrypt has rate limits to prevent abuse (see: https://letsencrypt.org/docs/rate-limits/)")
-	fmt.Println()
-
-	// System requirements check
-	checker := requirements.NewChecker(logger)
-	if err := checker.CheckSystemRequirements(); err != nil {
-		logger.Error("System requirements check failed: %v", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("Please provide the required configuration details:")
-
-	// Create a bufio.Reader to read user input from stdin
-	reader := bufio.NewReader(os.Stdin)
-
-	config := config.NewConfig(logger)
-	if err := config.CollectFromUser(reader); err != nil {
-		logger.Error("Failed to collect configuration: %v", err)
-		os.Exit(1)
-	}
-
-	logger.Info("Running installation...")
-	err := inst.RunWithConfig(config)
-	if err != nil {
+	// Run the complete installation process
+	if err := inst.RunCompleteInstallation(); err != nil {
 		logger.Error("Installation failed: %v", err)
 		os.Exit(1)
 	}
 
-	// Verify the installation and check for warnings
-	logger.Info("Verifying installation...")
-	_, verifyErr := inst.VerifyInstallation()
-
-	if verifyErr != nil {
-		logger.Warn("Installation verification had issues: %v", verifyErr)
-		logger.Info("You may need to troubleshoot these issues before using Infinity Metrics")
-	} else {
-		logger.Success("Installation verified successfully")
-	}
-
-	// DNS warnings (if any)
-	if inst.GetConfig().HasDNSWarnings() {
-		// Only print the DNS CONFIGURATION REQUIRED block here (summary), not earlier in the process
-		fmt.Println("\n\033[1m⚠️  DNS CONFIGURATION REQUIRED\033[0m")
-		fmt.Println(strings.Repeat("-", 40))
-		fmt.Println("The following DNS issues were detected during installation:")
-		for _, warning := range config.GetDNSWarnings() {
-			if strings.HasPrefix(warning, "Suggestion:") {
-				fmt.Printf("   💡 %s\n", warning[11:])
-			} else {
-				fmt.Printf("   • %s\n", warning)
-			}
-		}
-		fmt.Println("\n🛠️  NEXT STEPS:")
-		data := inst.GetConfig().GetData()
-		fmt.Printf("   1. Configure DNS: Add A/AAAA record for %s pointing to this server\n", data.Domain)
-		fmt.Println("   2. Wait for DNS propagation (up to 24 hours)")
-		fmt.Printf("   3. Test access: https://%s\n", data.Domain)
-		fmt.Println("   4. Monitor logs: sudo tail -f /opt/infinity-metrics/logs/caddy.log")
-		fmt.Println("\n📋 Note: All components are installed. The system will work once DNS is configured.")
-		fmt.Println("📋 SSL setup might not be immediate due to Let's Encrypt retries.")
-	}
-
+	// Calculate and display completion time
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Installation completed in %s", elapsedTime)
 
-	// Final success message with dashboard access information
-	fmt.Println()
-	fmt.Println("🎉 Installation Complete!")
-	fmt.Println("═══════════════════════════")
-	data := inst.GetConfig().GetData()
-	fmt.Printf("🌐 Dashboard URL: https://%s\n", data.Domain)
-	fmt.Printf("📧 Admin Email: %s\n", data.AdminEmail)
-	fmt.Printf("🔑 Use the password you set during installation to log in\n")
-	fmt.Println()
-	fmt.Println("🚀 Your Infinity Metrics installation is ready!")
-	fmt.Println("Thank you for choosing Infinity Metrics for your analytics needs.")
+	// Display final success message and access information
+	inst.DisplayCompletionMessage()
 
 	os.Stdout.Sync() // Force flush to ensure output is captured
 }
