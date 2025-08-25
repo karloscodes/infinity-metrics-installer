@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -202,6 +201,12 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			fmt.Println("Error: Domain cannot be empty.")
 			continue
 		}
+
+		// Validate domain format immediately using the same validation that will be used during installation
+		if err := validation.ValidateDomain(c.data.Domain); err != nil {
+			fmt.Printf("Error: %s\n", err.Error())
+			continue
+		}
 		break
 	}
 
@@ -221,9 +226,9 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 			continue
 		}
 
-		emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-		if !emailRegex.MatchString(c.data.AdminEmail) {
-			fmt.Println("Error: Invalid email address. Please enter a valid email (e.g., user@example.com).")
+		// Validate email format immediately using the same validation that will be used during installation
+		if err := validation.ValidateEmail(c.data.AdminEmail); err != nil {
+			fmt.Printf("Error: %s\n", err.Error())
 			continue
 		}
 		break
