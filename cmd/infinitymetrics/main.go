@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"infinity-metrics-installer/internal/admin"
+	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
@@ -55,6 +56,11 @@ func main() {
 		runRestoreDB(inst, logger, startTime)
 	case "change-admin-password":
 		if err := runAdminPasswordChange(logger); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "update-license-key":
+		if err := runUpdateLicenseKey(logger, startTime); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -266,18 +272,86 @@ func runAdminPasswordChange(logger *logging.Logger) error {
 	return nil
 }
 
+func runUpdateLicenseKey(logger *logging.Logger, startTime time.Time) error {
+	envFile := "/opt/infinity-metrics/.env"
+	
+	var newLicenseKey string
+	
+	// Check if license key was provided as command line argument
+	if len(os.Args) >= 3 {
+		newLicenseKey = os.Args[2]
+	} else {
+		// Prompt user for license key
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Enter new license key: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			logger.Error("Failed to read license key: %v", err)
+			return err
+		}
+		newLicenseKey = strings.TrimSpace(input)
+	}
+	
+	if newLicenseKey == "" {
+		return fmt.Errorf("license key cannot be empty")
+	}
+	
+	// Validate the license key format
+	if err := validation.ValidateLicenseKey(newLicenseKey); err != nil {
+		logger.Error("Invalid license key: %v", err)
+		return err
+	}
+	
+	logger.Info("Updating license key in %s", envFile)
+	
+	// Check if .env file exists
+	if _, err := os.Stat(envFile); os.IsNotExist(err) {
+		return fmt.Errorf(".env file not found at %s. Please run installation first", envFile)
+	}
+	
+	// Load current configuration
+	cfg := config.NewConfig(logger)
+	if err := cfg.LoadFromFile(envFile); err != nil {
+		return fmt.Errorf("failed to load current configuration: %w", err)
+	}
+	
+	// Update the license key
+	data := cfg.GetData()
+	data.LicenseKey = newLicenseKey
+	cfg.SetData(data)
+	
+	// Save the updated configuration
+	if err := cfg.SaveToFile(envFile); err != nil {
+		return fmt.Errorf("failed to save configuration: %w", err)
+	}
+	
+	logger.Info("License key updated successfully")
+	
+	// Reload containers to apply the new license key
+	logger.Info("Reloading containers with new license key...")
+	reloader := updater.NewReloader(logger)
+	if err := reloader.Run(); err != nil {
+		return fmt.Errorf("failed to reload containers: %w", err)
+	}
+	
+	elapsed := time.Since(startTime).Round(time.Second)
+	logger.Success("License key updated and containers reloaded in %s", elapsed)
+	return nil
+}
+
 func printVersion() {
 	fmt.Println(currentInstallerVersion)
 }
 
 func printUsage() {
-	fmt.Println("Usage: infinity-metrics [command]")
+	fmt.Println("Usage: infinity-metrics [command] [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  install                     Install Infinity Metrics")
 	fmt.Println("  update                      Update an existing installation")
 	fmt.Println("  reload                      Reload containers with latest .env config without backup")
 	fmt.Println("  restore-db                  Interactively restore database from a backup")
 	fmt.Println("  change-admin-password       Change the admin user password")
+	fmt.Println("  update-license-key [key]    Update the license key and restart containers")
 	fmt.Println("  version                     Show version information")
 	fmt.Println("  help                        Show this help message")
 }
