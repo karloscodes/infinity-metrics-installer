@@ -387,7 +387,6 @@ func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
 		"-v", filepath.Join(data.InstallDir, "caddy", "config")+":/config",
 		"-v", filepath.Join(data.InstallDir, "logs")+":/data/logs",
 		"-e", "DOMAIN="+data.Domain,
-		"-e", "ADMIN_EMAIL="+data.AdminEmail,
 		"--memory=256m",
 		"--restart", "unless-stopped",
 		data.CaddyImage,
@@ -419,7 +418,6 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 		"-v", filepath.Join(data.InstallDir, "logs")+":/app/logs",
 		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
-		"-e", "INFINITY_METRICS_LICENSE_KEY="+data.LicenseKey,
 		"-e", "INFINITY_METRICS_DOMAIN="+data.Domain,
 		"-e", "INFINITY_METRICS_PRIVATE_KEY="+data.PrivateKey,
 		"-e", "SERVER_INSTANCE_ID="+name,
@@ -544,15 +542,14 @@ func (d *Docker) generateCaddyfile(data config.ConfigData) (string, error) {
 		tlsConfig = "internal"
 	} else {
 		d.logger.Info("Using Let's Encrypt for production environment")
-		tlsConfig = data.AdminEmail
+		// Generate admin email for Let's Encrypt
+		tlsConfig = generateAdminEmail(data.Domain)
 	}
 
 	tplData := struct {
-		AdminEmail string
 		Domain     string
 		TLSConfig  string
 	}{
-		AdminEmail: data.AdminEmail,
 		Domain:     data.Domain,
 		TLSConfig:  tlsConfig,
 	}
@@ -677,4 +674,48 @@ func (d *Docker) isContainerRunning(containerName string) (bool, error) {
 	}
 
 	return strings.Contains(string(output), containerName), nil
+}
+
+// generateAdminEmail generates the admin email for Let's Encrypt based on the domain
+// Format: admin-infinity-metrics@{base_domain}
+// Examples:
+//   - "analytics.company.com" -> "admin-infinity-metrics@company.com"
+//   - "t.getinfinitymetrics.com" -> "admin-infinity-metrics@getinfinitymetrics.com"
+//   - "google.com" -> "admin-infinity-metrics@google.com"
+func generateAdminEmail(domain string) string {
+	baseDomain := extractBaseDomain(domain)
+	return fmt.Sprintf("admin-infinity-metrics@%s", baseDomain)
+}
+
+// extractBaseDomain extracts the base domain from a subdomain
+func extractBaseDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	
+	// Handle localhost and IP addresses - return as-is
+	localhostDomains := []string{
+		"localhost", "127.0.0.1", "::1", "0.0.0.0", "localhost.localdomain",
+	}
+	for _, localhost := range localhostDomains {
+		if domain == localhost {
+			return domain
+		}
+	}
+	
+	// Check for localhost with port or subdomains
+	if strings.HasPrefix(domain, "localhost:") || strings.HasSuffix(domain, ".localhost") {
+		return domain
+	}
+	
+	// Split by dots
+	parts := strings.Split(domain, ".")
+	if len(parts) <= 2 {
+		// Already a base domain (e.g., "company.com" or single label)
+		return domain
+	}
+	
+	// For domains with more than 2 parts, take the last 2
+	// This handles most cases correctly:
+	// - "analytics.company.com" -> "company.com"
+	// - "sub.domain.example.org" -> "example.org"
+	return strings.Join(parts[len(parts)-2:], ".")
 }

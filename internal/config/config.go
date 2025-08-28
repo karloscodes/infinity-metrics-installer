@@ -27,18 +27,15 @@ const GithubRepo = "karloscodes/infinity-metrics-installer"
 
 // ConfigData holds the configuration
 type ConfigData struct {
-	Domain        string   // Local: User-provided
-	AdminEmail    string   // Local: User-provided
-	LicenseKey    string   // Local: User-provided
-	AdminPassword string   // Local: User-provided, held in memory only
-	AppImage      string   // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
-	CaddyImage    string   // GitHub Release/Default: e.g., "caddy:2.7-alpine"
-	InstallDir    string   // Default: e.g., "/opt/infinity-metrics"
-	BackupPath    string   // Default: SQLite backup location
-	PrivateKey    string   // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
-	Version       string   // GitHub Release: Version of the infinity-metrics binary (optional)
-	InstallerURL  string   // GitHub Release: URL to download new infinity-metrics binary
-	DNSWarnings   []string // DNS configuration warnings
+	Domain       string   // Local: User-provided
+	AppImage     string   // GitHub Release/Default: e.g., "karloscodes/infinity-metrics-beta:latest"
+	CaddyImage   string   // GitHub Release/Default: e.g., "caddy:2.7-alpine"
+	InstallDir   string   // Default: e.g., "/opt/infinity-metrics"
+	BackupPath   string   // Default: SQLite backup location
+	PrivateKey   string   // Generated: secure random key for INFINITY_METRICS_PRIVATE_KEY
+	Version      string   // GitHub Release: Version of the infinity-metrics binary (optional)
+	InstallerURL string   // GitHub Release: URL to download new infinity-metrics binary
+	DNSWarnings  []string // DNS configuration warnings
 }
 
 // Config manages configuration
@@ -52,17 +49,14 @@ func NewConfig(logger *logging.Logger) *Config {
 	return &Config{
 		logger: logger,
 		data: ConfigData{
-			Domain:        "", // Required from user
-			AdminEmail:    "", // Required from user
-			AdminPassword: "", // Required from user, held in memory
-			LicenseKey:    "", // Required from user
-			AppImage:      "karloscodes/infinity-metrics-beta:latest",
-			CaddyImage:    "caddy:2.7-alpine",
-			InstallDir:    "/opt/infinity-metrics",
-			BackupPath:    "/opt/infinity-metrics/storage/backups",
-			PrivateKey:    "",
-			Version:       "latest",
-			InstallerURL:  fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
+			Domain:       "", // Required from user
+			AppImage:     "karloscodes/infinity-metrics-beta:latest",
+			CaddyImage:   "caddy:2.7-alpine",
+			InstallDir:   "/opt/infinity-metrics",
+			BackupPath:   "/opt/infinity-metrics/storage/backups",
+			PrivateKey:   "",
+			Version:      "latest",
+			InstallerURL: fmt.Sprintf("https://github.com/%s/releases/latest", GithubRepo),
 		},
 	}
 }
@@ -184,9 +178,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 
 	// Initialize default values
 	c.data.Domain = ""
-	c.data.AdminEmail = ""
-	c.data.LicenseKey = ""
-	c.data.AdminPassword = ""
 	c.data.InstallDir = "/opt/infinity-metrics"
 
 	// Collect domain
@@ -213,81 +204,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 	// Check DNS records and store warnings instead of blocking
 	c.CheckDNSAndStoreWarnings(c.data.Domain)
 
-	// Collect admin email
-	for {
-		fmt.Print("Enter admin email address: ")
-		adminEmail, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read admin email: %w", err)
-		}
-		c.data.AdminEmail = strings.TrimSpace(adminEmail)
-		if c.data.AdminEmail == "" {
-			fmt.Println("Error: Admin email cannot be empty.")
-			continue
-		}
-
-		// Validate email format immediately using the same validation that will be used during installation
-		if err := validation.ValidateEmail(c.data.AdminEmail); err != nil {
-			fmt.Printf("Error: %s\n", err.Error())
-			continue
-		}
-		break
-	}
-
-	// Collect license key
-	for {
-		fmt.Print("Enter your Infinity Metrics license key: ")
-		licenseKey, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read license key: %w", err)
-		}
-		c.data.LicenseKey = strings.TrimSpace(licenseKey)
-		if c.data.LicenseKey == "" {
-			fmt.Println("Error: License key cannot be empty.")
-			continue
-		}
-		
-		// Validate license key format immediately
-		if err := validation.ValidateLicenseKey(c.data.LicenseKey); err != nil {
-			fmt.Printf("Error: %s\n", err.Error())
-			continue
-		}
-		break
-	}
-
-	// Collect admin password
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
-	if adminPassword != "" {
-		c.data.AdminPassword = adminPassword
-		c.logger.Info("Using admin password from environment variable")
-	} else {
-		for {
-			password, err := c.readPassword(reader, "Enter admin password (minimum 8 characters): ")
-			if err != nil {
-				return fmt.Errorf("failed to read password: %w", err)
-			}
-
-			c.data.AdminPassword = password
-			
-			// Validate password using the same validation that will be used during installation
-			if err := validation.ValidatePassword(c.data.AdminPassword); err != nil {
-				fmt.Printf("Error: %s\n", err.Error())
-				continue
-			}
-
-			confirmPassword, err := c.readPassword(reader, "Confirm admin password: ")
-			if err != nil {
-				return fmt.Errorf("failed to read confirmation password: %w", err)
-			}
-
-			if c.data.AdminPassword != confirmPassword {
-				fmt.Println("Error: Passwords do not match. Please try again.")
-				continue
-			}
-			break
-		}
-	}
-
 	c.data.BackupPath = filepath.Join(c.data.InstallDir, "storage", "backups")
 
 	// Show configuration summary and get confirmation
@@ -299,8 +215,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		} else {
 			fmt.Printf("DNS Status: ✅ Verified\n")
 		}
-		fmt.Printf("Admin Email: %s\n", c.data.AdminEmail)
-		fmt.Printf("License Key: %s\n", c.data.LicenseKey)
 		fmt.Printf("Installation Directory: %s\n", c.data.InstallDir)
 		fmt.Printf("Backup Path: %s\n", c.data.BackupPath)
 
@@ -318,9 +232,6 @@ func (c *Config) CollectFromUser(reader *bufio.Reader) error {
 		fmt.Println("Configuration declined. Let's start over.")
 		// Reset all values and start over
 		c.data.Domain = ""
-		c.data.AdminEmail = ""
-		c.data.LicenseKey = ""
-		c.data.AdminPassword = ""
 		return c.CollectFromUser(reader)
 	}
 
@@ -339,32 +250,8 @@ func (c *Config) collectFromEnvironment() error {
 	}
 	c.data.Domain = domain
 
-	// Read admin email from environment
-	adminEmail := os.Getenv("ADMIN_EMAIL")
-	if adminEmail == "" {
-		return fmt.Errorf("ADMIN_EMAIL environment variable is required in non-interactive mode")
-	}
-	c.data.AdminEmail = adminEmail
-
-	// Read license key from environment
-	licenseKey := os.Getenv("LICENSE_KEY")
-	if licenseKey == "" {
-		return fmt.Errorf("LICENSE_KEY environment variable is required in non-interactive mode")
-	}
-	c.data.LicenseKey = licenseKey
-
-	// Read admin password from environment
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
-	if adminPassword == "" {
-		return fmt.Errorf("ADMIN_PASSWORD environment variable is required in non-interactive mode")
-	}
-	c.data.AdminPassword = adminPassword
-
 	c.logger.Info("Configuration loaded from environment variables:")
 	c.logger.Info("  Domain: %s", c.data.Domain)
-	c.logger.Info("  Admin Email: %s", c.data.AdminEmail)
-	c.logger.Info("  License Key: %s", c.data.LicenseKey)
-	c.logger.Info("  Admin Password: [HIDDEN]")
 
 	// Set default values for other fields
 	c.data.InstallDir = "/opt/infinity-metrics"
@@ -407,11 +294,7 @@ func (c *Config) LoadFromFile(filename string) error {
 		switch key {
 		case "INFINITY_METRICS_DOMAIN":
 			c.data.Domain = value
-		case "INFINITY_METRICS_ADMIN_EMAIL":
-			c.data.AdminEmail = value
-		case "INFINITY_METRICS_LICENSE_KEY":
-			c.data.LicenseKey = value
-		case "APP_IMAGE":
+			case "APP_IMAGE":
 			c.data.AppImage = value
 		case "CADDY_IMAGE":
 			c.data.CaddyImage = value
@@ -471,8 +354,6 @@ func (c *Config) SaveToFile(filename string) error {
 	defer file.Close()
 
 	fmt.Fprintf(file, "INFINITY_METRICS_DOMAIN=%s\n", c.data.Domain)
-	fmt.Fprintf(file, "INFINITY_METRICS_ADMIN_EMAIL=%s\n", c.data.AdminEmail)
-	fmt.Fprintf(file, "INFINITY_METRICS_LICENSE_KEY=%s\n", c.data.LicenseKey)
 	fmt.Fprintf(file, "APP_IMAGE=%s\n", c.data.AppImage)
 	fmt.Fprintf(file, "CADDY_IMAGE=%s\n", c.data.CaddyImage)
 	fmt.Fprintf(file, "INSTALL_DIR=%s\n", c.data.InstallDir)
@@ -535,21 +416,6 @@ func (c *Config) Validate() error {
 	// Validate domain
 	if err := validation.ValidateDomain(c.data.Domain); err != nil {
 		return errors.NewConfigError("domain", c.data.Domain, err.Error())
-	}
-
-	// Validate admin email
-	if err := validation.ValidateEmail(c.data.AdminEmail); err != nil {
-		return errors.NewConfigError("admin_email", c.data.AdminEmail, err.Error())
-	}
-
-	// Validate license key
-	if err := validation.ValidateLicenseKey(c.data.LicenseKey); err != nil {
-		return errors.NewConfigError("license_key", c.data.LicenseKey, err.Error())
-	}
-
-	// Validate password
-	if err := validation.ValidatePassword(c.data.AdminPassword); err != nil {
-		return errors.NewConfigError("admin_password", "", err.Error())
 	}
 
 	// Validate app image
@@ -857,3 +723,4 @@ func isLocalhostDomain(domain string) bool {
 
 	return false
 }
+
