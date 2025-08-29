@@ -25,6 +25,24 @@ func TestGenerateCaddyfile_ProdEnv(t *testing.T) {
 	}
 }
 
+func TestGenerateCaddyfile_WithDatabaseUser(t *testing.T) {
+	d := &Docker{logger: testLogger(t)}
+	data := config.ConfigData{
+		Domain: "example.com",
+		User:   "admin@mycompany.com",
+	}
+	caddyfile, err := d.generateCaddyfile(data)
+	if err != nil {
+		t.Fatalf("generateCaddyfile error: %v", err)
+	}
+	if !strings.Contains(caddyfile, "admin@mycompany.com") {
+		t.Errorf("Caddyfile should use database user email, got: %s", caddyfile)
+	}
+	if strings.Contains(caddyfile, "admin-infinity-metrics@example.com") {
+		t.Errorf("Caddyfile should not contain generated email when database user exists")
+	}
+}
+
 func TestCaddyFileGeneration(t *testing.T) {
 	t.Run("ProductionConfigIncludesSSLConfiguration", func(t *testing.T) {
 		d := &Docker{logger: testLogger(t)}

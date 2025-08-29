@@ -36,6 +36,8 @@ type ConfigData struct {
 	Version      string   // GitHub Release: Version of the infinity-metrics binary (optional)
 	InstallerURL string   // GitHub Release: URL to download new infinity-metrics binary
 	DNSWarnings  []string // DNS configuration warnings
+	User         string   // Database: Admin user email from users table
+	LicenseKey   string   // License key for the application
 }
 
 // Config manages configuration
@@ -294,7 +296,7 @@ func (c *Config) LoadFromFile(filename string) error {
 		switch key {
 		case "INFINITY_METRICS_DOMAIN":
 			c.data.Domain = value
-			case "APP_IMAGE":
+		case "APP_IMAGE":
 			c.data.AppImage = value
 		case "CADDY_IMAGE":
 			c.data.CaddyImage = value
@@ -308,6 +310,10 @@ func (c *Config) LoadFromFile(filename string) error {
 			c.data.InstallerURL = value
 		case "INFINITY_METRICS_PRIVATE_KEY":
 			c.data.PrivateKey = value
+		case "INFINITY_METRICS_USER":
+			c.data.User = value
+		case "INFINITY_METRICS_LICENSE_KEY":
+			c.data.LicenseKey = value
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -361,6 +367,12 @@ func (c *Config) SaveToFile(filename string) error {
 	fmt.Fprintf(file, "VERSION=%s\n", c.data.Version)
 	fmt.Fprintf(file, "INSTALLER_URL=%s\n", c.data.InstallerURL)
 	fmt.Fprintf(file, "INFINITY_METRICS_PRIVATE_KEY=%s\n", c.data.PrivateKey)
+	if c.data.User != "" {
+		fmt.Fprintf(file, "INFINITY_METRICS_USER=%s\n", c.data.User)
+	}
+	if c.data.LicenseKey != "" {
+		fmt.Fprintf(file, "INFINITY_METRICS_LICENSE_KEY=%s\n", c.data.LicenseKey)
+	}
 
 	c.logger.Info("Configuration saved to %s", filename)
 	return nil

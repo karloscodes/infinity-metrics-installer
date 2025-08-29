@@ -144,22 +144,9 @@ func (i *Installer) RunCompleteInstallation() error {
 func (i *Installer) displayWelcomeMessage() {
 	fmt.Println("🚀 Welcome to Infinity Metrics Installer!")
 	fmt.Println()
-	fmt.Println("📋 System Requirements:")
-	fmt.Println("   • Ports 80 and 443 must be available (required for HTTP/HTTPS and SSL)")
-	fmt.Println("   • Root privileges (run with sudo)")
-	fmt.Println("   • Internet connection for downloading components")
-	fmt.Println()
-	fmt.Println("📋 DNS Configuration (Optional but Recommended):")
-	fmt.Println("   • If you set up A/AAAA DNS records for your domain BEFORE installation,")
-	fmt.Println("     the installer will automatically configure SSL certificates.")
-	fmt.Println("   • You can also configure DNS records later, but SSL setup won't be immediate.")
-	fmt.Println("   • The system will work either way - SSL will be configured automatically")
-	fmt.Println("     once DNS propagation is complete.")
-	fmt.Println()
-	fmt.Println("🔒 SSL Certificate Information:")
-	fmt.Println("   • SSL certificates are provided by Let's Encrypt with automatic renewal")
-	fmt.Println("   • If SSL setup fails initially, the system will automatically retry, adding some delays.")
-	fmt.Println("   • Let's Encrypt has rate limits to prevent abuse (see: https://letsencrypt.org/docs/rate-limits/)")
+	fmt.Println("📋 Requirements: Ports 80/443 available, root privileges, internet connection")
+	fmt.Println("📋 DNS Configuration (Optional): A/AAAA records are optional but useful if set before install")
+	fmt.Println("🔒 SSL certificates provided by Let's Encrypt with automatic renewal")
 	fmt.Println()
 }
 
@@ -279,12 +266,7 @@ func (i *Installer) DisplayCompletionMessage() {
 	fmt.Printf("🌐 Dashboard URL: https://%s\n", data.Domain)
 	// Generate the admin email that will be used for Let's Encrypt
 	baseDomain := extractBaseDomain(data.Domain)
-	adminEmail := fmt.Sprintf("admin-infinity-metrics@%s", baseDomain)
-	
-	fmt.Printf("📧 Access the admin panel after visiting your domain\n")
-	fmt.Printf("🔒 SSL certificates are managed automatically using %s\n", adminEmail)
-	fmt.Printf("   📬 Please create an email alias: %s\n", adminEmail)
-	fmt.Printf("   📬 This will ensure you receive Let's Encrypt certificate notifications\n")
+	_ = fmt.Sprintf("admin-infinity-metrics@%s", baseDomain) // Keep for potential future use
 	fmt.Println()
 	fmt.Println("🚀 Your Infinity Metrics installation is ready!")
 	fmt.Println("Thank you for choosing Infinity Metrics for your analytics needs.")

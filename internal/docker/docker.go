@@ -94,7 +94,6 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	dataDir := data.InstallDir
 
 	if d.IsRunning(CaddyName) && (d.IsRunning(AppNamePrimary) || d.IsRunning(AppNameSecondary)) {
-		d.logger.Info("Active installation detected with running containers, skipping deployment")
 		return nil
 	}
 
@@ -111,11 +110,9 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	}
 
 	if _, err := d.RunCommand("network", "inspect", NetworkName); err != nil {
-		d.logger.Info("Creating Docker network %s", NetworkName)
 		if _, err := d.RunCommand("network", "create", NetworkName); err != nil {
 			return fmt.Errorf("create network: %w", err)
 		}
-		d.logger.Success("Network created")
 	}
 
 	caddyFile := filepath.Join(dataDir, "Caddyfile")
@@ -128,10 +125,8 @@ func (d *Docker) Deploy(conf *config.Config) error {
 	}
 
 	for _, image := range []string{data.AppImage, data.CaddyImage} {
-		d.logger.Info("Pulling %s...", image)
 		for i := 0; i < MaxRetries; i++ {
 			if _, err := d.RunCommand("pull", image); err == nil {
-				d.logger.Success("%s pulled successfully", image)
 				d.logImageDigest(image)
 				break
 			} else if i == MaxRetries-1 {
@@ -374,9 +369,11 @@ func (d *Docker) Reload(conf *config.Config) error {
 
 func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
 	if cleanupErr := d.StopAndRemove(CaddyName); cleanupErr != nil {
-		d.logger.Warn("Failed to cleanup existing Caddy container: %v", cleanupErr)
+		// Only log if it's not a "no such container" error
+		if !strings.Contains(cleanupErr.Error(), "No such container") {
+			d.logger.Warn("Failed to cleanup existing Caddy container: %v", cleanupErr)
+		}
 	}
-	d.logger.Info("Starting Caddy container...")
 	_, err := d.RunCommand("run", "-d",
 		"--name", CaddyName,
 		"--network", NetworkName,
@@ -394,22 +391,20 @@ func (d *Docker) deployCaddy(data config.ConfigData, caddyFile string) error {
 	if err != nil {
 		return fmt.Errorf("start caddy: %w", err)
 	}
-	d.logger.Success("Caddy deployed")
-
-	d.logger.Info("Ensuring /data directory is writable in %s container...", CaddyName)
 	_, err = d.RunCommand("exec", CaddyName, "chmod", "-R", "755", "/data")
 	if err != nil {
 		return fmt.Errorf("failed to set permissions on /data directory in %s container: %w", CaddyName, err)
 	}
-	d.logger.Success("/data directory permissions ensured")
 	return nil
 }
 
 func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	if cleanupErr := d.StopAndRemove(name); cleanupErr != nil {
-		d.logger.Warn("Failed to cleanup existing container %s: %v", name, cleanupErr)
+		// Only log if it's not a "no such container" error
+		if !strings.Contains(cleanupErr.Error(), "No such container") {
+			d.logger.Warn("Failed to cleanup existing container %s: %v", name, cleanupErr)
+		}
 	}
-	d.logger.Info("Deploying %s...", name)
 	_, err := d.RunCommand("run", "-d",
 		"--name", name,
 		"--network", NetworkName,
@@ -428,7 +423,6 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 	if err != nil {
 		return fmt.Errorf("deploy %s: %w", name, err)
 	}
-	d.logger.Success("%s deployed", name)
 	return nil
 }
 
@@ -441,18 +435,20 @@ func (d *Docker) StopAndRemove(name string) error {
 	
 	// Attempt to stop the container
 	if _, err := d.RunCommand("stop", name); err != nil {
-		d.logger.Warn("Failed to stop container %s: %v", name, err)
+		// Only warn if it's not a "no such container" error
+		if !strings.Contains(err.Error(), "No such container") {
+			d.logger.Warn("Failed to stop container %s: %v", name, err)
+		}
 		stopErr = err
-	} else {
-		d.logger.Debug("Container %s stopped successfully", name)
 	}
 	
 	// Attempt to remove the container
 	if _, err := d.RunCommand("rm", "-f", name); err != nil {
-		d.logger.Warn("Failed to remove container %s: %v", name, err)
+		// Only warn if it's not a "no such container" error
+		if !strings.Contains(err.Error(), "No such container") {
+			d.logger.Warn("Failed to remove container %s: %v", name, err)
+		}
 		removeErr = err
-	} else {
-		d.logger.Debug("Container %s removed successfully", name)
 	}
 	
 	// Return error if remove failed (more critical than stop failure)
@@ -542,8 +538,14 @@ func (d *Docker) generateCaddyfile(data config.ConfigData) (string, error) {
 		tlsConfig = "internal"
 	} else {
 		d.logger.Info("Using Let's Encrypt for production environment")
-		// Generate admin email for Let's Encrypt
-		tlsConfig = generateAdminEmail(data.Domain)
+		// Use database user email if available, otherwise generate admin email for Let's Encrypt
+		if data.User != "" {
+			d.logger.Info("Using database admin user email for Let's Encrypt: %s", data.User)
+			tlsConfig = data.User
+		} else {
+			d.logger.Info("No database user found, generating admin email for Let's Encrypt")
+			tlsConfig = generateAdminEmail(data.Domain)
+		}
 	}
 
 	tplData := struct {
