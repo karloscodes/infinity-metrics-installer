@@ -51,28 +51,8 @@ func TestInstallation(t *testing.T) {
 	config.BinaryPath = binaryPath
 	config.Args = []string{"install"}
 
-	// Get license key from environment or use a default for testing
-	licenseKey := os.Getenv("INFINITY_METRICS_LICENSE_KEY")
-	if licenseKey == "" {
-		licenseKey = "test-license-key"
-		t.Logf("Using default test license key. Set INFINITY_METRICS_LICENSE_KEY for a real key.")
-	} else {
-		t.Logf("Using license key from environment variable: %s", licenseKey)
-	}
-
-	adminPassword := "SecurePassword123!"
-	if isRunningInCI() {
-		os.Setenv("ADMIN_PASSWORD", adminPassword)
-		t.Log("Set ADMIN_PASSWORD in CI environment")
-		// Use localhost as domain in CI
-		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\n\n", licenseKey)
-	} else {
-		// If ADMIN_PASSWORD is set, do NOT provide password/confirmation in stdin
-		config.EnvVars["ADMIN_PASSWORD"] = adminPassword
-		// Use localhost as domain for local tests as well
-		config.StdinInput = fmt.Sprintf("localhost\nadmin@example.com\n%s\ny\n",
-			licenseKey)
-	}
+	// Use localhost as domain for both CI and local tests
+	config.StdinInput = "localhost\ny\n"
 	config.Debug = os.Getenv("DEBUG") == "1"
 	config.Timeout = 10 * time.Minute // Increased timeout
 	config.VMName = "infinity-test-vm"
@@ -102,9 +82,6 @@ func TestInstallation(t *testing.T) {
 
 	interactivePatterns := []string{
 		"Enter your domain name",
-		"Enter admin email address",
-		"Enter your Infinity Metrics license key",
-		"Enter admin password",
 		"Configuration Summary:",
 		"Proceed with this configuration?",
 	}

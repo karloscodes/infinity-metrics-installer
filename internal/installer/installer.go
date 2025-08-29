@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"infinity-metrics-installer/internal/admin"
 	"infinity-metrics-installer/internal/config"
 	"infinity-metrics-installer/internal/cron"
 	"infinity-metrics-installer/internal/database"
@@ -124,12 +123,12 @@ func (i *Installer) RunCompleteInstallation() error {
 	close(deployProgressChan)
 	i.logger.Success("Application deployed")
 
-	// Step 7: Setup admin user and maintenance
-	i.logger.Info("Step 6/%d: Setting up admin user and maintenance", totalSteps)
-	if err := i.setupUserAndMaintenance(); err != nil {
-		return fmt.Errorf("failed to setup user and maintenance: %w", err)
+	// Step 7: Setup maintenance
+	i.logger.Info("Step 6/%d: Setting up maintenance", totalSteps)
+	if err := i.setupMaintenance(); err != nil {
+		return fmt.Errorf("failed to setup maintenance: %w", err)
 	}
-	i.logger.Success("Admin user and maintenance configured")
+	i.logger.Success("Maintenance configured")
 
 	// Step 8: Verify installation
 	i.logger.Info("Step 7/%d: Verifying installation", totalSteps)
@@ -145,22 +144,9 @@ func (i *Installer) RunCompleteInstallation() error {
 func (i *Installer) displayWelcomeMessage() {
 	fmt.Println("🚀 Welcome to Infinity Metrics Installer!")
 	fmt.Println()
-	fmt.Println("📋 System Requirements:")
-	fmt.Println("   • Ports 80 and 443 must be available (required for HTTP/HTTPS and SSL)")
-	fmt.Println("   • Root privileges (run with sudo)")
-	fmt.Println("   • Internet connection for downloading components")
-	fmt.Println()
-	fmt.Println("📋 DNS Configuration (Optional but Recommended):")
-	fmt.Println("   • If you set up A/AAAA DNS records for your domain BEFORE installation,")
-	fmt.Println("     the installer will automatically configure SSL certificates.")
-	fmt.Println("   • You can also configure DNS records later, but SSL setup won't be immediate.")
-	fmt.Println("   • The system will work either way - SSL will be configured automatically")
-	fmt.Println("     once DNS propagation is complete.")
-	fmt.Println()
-	fmt.Println("🔒 SSL Certificate Information:")
-	fmt.Println("   • SSL certificates are provided by Let's Encrypt with automatic renewal")
-	fmt.Println("   • If SSL setup fails initially, the system will automatically retry, adding some delays.")
-	fmt.Println("   • Let's Encrypt has rate limits to prevent abuse (see: https://letsencrypt.org/docs/rate-limits/)")
+	fmt.Println("📋 Requirements: Ports 80/443 available, root privileges, internet connection")
+	fmt.Println("📋 DNS Configuration (Optional): A/AAAA records are optional but useful if set before install")
+	fmt.Println("🔒 SSL certificates provided by Let's Encrypt with automatic renewal")
 	fmt.Println()
 }
 
@@ -231,13 +217,8 @@ func (i *Installer) updateExistingConfig(envFile string) error {
 	return nil
 }
 
-// setupUserAndMaintenance handles admin user creation and maintenance setup
-func (i *Installer) setupUserAndMaintenance() error {
-	// Create admin user
-	if err := i.createDefaultUser(); err != nil {
-		return fmt.Errorf("failed to create admin user: %w", err)
-	}
-	
+// setupMaintenance handles maintenance setup (no admin user creation)
+func (i *Installer) setupMaintenance() error {
 	// Install binary for updates (non-critical)
 	if err := i.installBinary(); err != nil {
 		i.logger.Warn("Failed to install binary for updates: %v", err)
@@ -283,8 +264,9 @@ func (i *Installer) DisplayCompletionMessage() {
 	fmt.Println("═══════════════════════════")
 	data := i.config.GetData()
 	fmt.Printf("🌐 Dashboard URL: https://%s\n", data.Domain)
-	fmt.Printf("📧 Admin Email: %s\n", data.AdminEmail)
-	fmt.Printf("🔑 Use the password you set during installation to log in\n")
+	// Generate the admin email that will be used for Let's Encrypt
+	baseDomain := extractBaseDomain(data.Domain)
+	_ = fmt.Sprintf("admin-infinity-metrics@%s", baseDomain) // Keep for potential future use
 	fmt.Println()
 	fmt.Println("🚀 Your Infinity Metrics installation is ready!")
 	fmt.Println("Thank you for choosing Infinity Metrics for your analytics needs.")
@@ -388,12 +370,8 @@ func (i *Installer) Run() error {
 	close(deployProgressChan)
 	i.logger.Success("Deployment completed")
 
-	i.logger.Info("Step 6/%d: Creating default admin user", totalSteps)
-	// Step 6: Admin user
-	if err := i.createDefaultUser(); err != nil {
-		i.logger.Error("Default user creation failed: %v", err)
-		return fmt.Errorf("failed to create default user: %w", err)
-	}
+	i.logger.Info("Step 6/%d: Setting up maintenance", totalSteps)
+	// Step 6: Maintenance setup
 	// Install the binary itself for updates and cron jobs
 	if err := i.installBinary(); err != nil {
 		i.logger.Warn("Failed to install binary for updates: %v", err)
@@ -460,17 +438,6 @@ func (i *Installer) createInstallDir(installDir string) error {
 	return nil
 }
 
-func (i *Installer) createDefaultUser() error {
-	data := i.config.GetData()
-
-	adminMgr := admin.NewManager(i.logger)
-	if err := adminMgr.CreateAdminUser(data.AdminEmail, data.AdminPassword); err != nil {
-		return fmt.Errorf("failed to create admin user: %w", err)
-	}
-
-	i.logger.Success("Admin user created with email: %s", data.AdminEmail)
-	return nil
-}
 
 // VerifyInstallation provides a way to verify that the installation completed successfully
 func (i *Installer) VerifyInstallation() ([]string, error) {
@@ -592,4 +559,42 @@ func (i *Installer) installBinary() error {
 
 	i.logger.Success("Binary installed successfully at %s", i.binaryPath)
 	return nil
+}
+
+// extractBaseDomain extracts the base domain from a subdomain
+// Examples:
+//   - "analytics.company.com" -> "company.com"
+//   - "t.getinfinitymetrics.com" -> "getinfinitymetrics.com"
+//   - "google.com" -> "google.com"
+//   - "localhost" -> "localhost"
+func extractBaseDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	
+	// Handle localhost and IP addresses - return as-is
+	localhostDomains := []string{
+		"localhost", "127.0.0.1", "::1", "0.0.0.0", "localhost.localdomain",
+	}
+	for _, localhost := range localhostDomains {
+		if domain == localhost {
+			return domain
+		}
+	}
+	
+	// Check for localhost with port or subdomains
+	if strings.HasPrefix(domain, "localhost:") || strings.HasSuffix(domain, ".localhost") {
+		return domain
+	}
+	
+	// Split by dots
+	parts := strings.Split(domain, ".")
+	if len(parts) <= 2 {
+		// Already a base domain (e.g., "company.com" or single label)
+		return domain
+	}
+	
+	// For domains with more than 2 parts, take the last 2
+	// This handles most cases correctly:
+	// - "analytics.company.com" -> "company.com"
+	// - "sub.domain.example.org" -> "example.org"
+	return strings.Join(parts[len(parts)-2:], ".")
 }

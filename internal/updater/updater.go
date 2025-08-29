@@ -239,6 +239,16 @@ func (u *Updater) update() error {
 		u.logger.Success("Database backup created successfully")
 	}
 
+	// Read admin user from database and update config
+	if adminUser, err := u.database.GetAdminUser(mainDBPath); err != nil {
+		u.logger.Warn("Failed to read admin user from database: %v", err)
+	} else if adminUser != "" {
+		data := u.config.GetData()
+		data.User = adminUser
+		u.config.SetData(data)
+		u.logger.Info("Updated configuration with admin user: %s", adminUser)
+	}
+
 	if err := u.docker.Update(u.config); err != nil {
 		return fmt.Errorf("failed to update Docker containers: %w", err)
 	}

@@ -1,6 +1,8 @@
 {
     admin 0.0.0.0:2019
-    email {{.AdminEmail}}
+    {{if ne .TLSConfig "internal"}}
+    email {{.TLSConfig}}
+    {{end}}
     log {
         level INFO
         output file /data/logs/caddy.log {
@@ -22,7 +24,7 @@
     {{if eq .TLSConfig "internal"}}
     tls internal
     {{else}}
-    tls {{.AdminEmail}}
+    tls {{.TLSConfig}}
     {{end}}
     encode zstd gzip
     

@@ -331,6 +331,44 @@ func (d *Database) ValidateBackup(backupFile string) error {
 	return nil
 }
 
+// GetAdminUser reads the first user email from the users table
+func (d *Database) GetAdminUser(dbPath string) (string, error) {
+	// Check if the database file exists
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			d.logger.Debug("Database file not found: %s", dbPath)
+			return "", nil
+		}
+		return "", fmt.Errorf("cannot access database: %w", err)
+	}
+
+	// Query the database for the first user's email
+	cmd := exec.Command("sqlite3", dbPath, "SELECT email FROM users LIMIT 1;")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if d.logger != nil {
+			d.logger.Warn("Failed to query user from database: %s", stderr.String())
+		}
+		return "", fmt.Errorf("failed to query database: %w", err)
+	}
+
+	email := strings.TrimSpace(stdout.String())
+	if email == "" {
+		if d.logger != nil {
+			d.logger.Debug("No user found in database")
+		}
+		return "", nil
+	}
+
+	if d.logger != nil {
+		d.logger.Debug("Found user in database: %s", email)
+	}
+	return email, nil
+}
+
 // RestoreDatabase restores a backup to the main database path
 func (d *Database) RestoreDatabase(mainDBPath, backupPath string) error {
 	// Validate the backup
