@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
+	"infinity-metrics-installer/internal/admin"
 	"infinity-metrics-installer/internal/config"
+	"infinity-metrics-installer/internal/errors"
 	"infinity-metrics-installer/internal/installer"
 	"infinity-metrics-installer/internal/logging"
 	"infinity-metrics-installer/internal/updater"
 	"infinity-metrics-installer/internal/validation"
+
+	"golang.org/x/term"
 )
 
 var currentInstallerVersion string = "dev"
@@ -206,6 +211,65 @@ func runReload(logger *logging.Logger, startTime time.Time) {
 
 	elapsedTime := time.Since(startTime).Round(time.Second)
 	logger.Success("Reload completed in %s", elapsedTime)
+}
+
+func runAdminPasswordChange(logger *logging.Logger) error {
+	startTime := time.Now()
+	adminMgr := admin.NewManager(logger)
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter admin email: ")
+	emailInput, err := reader.ReadString('\n')
+	if err != nil {
+		logger.Error("Failed to read email: %v", err)
+		return err
+	}
+	email := strings.TrimSpace(emailInput)
+	if err := validation.ValidateEmail(email); err != nil {
+		logger.Error("Invalid email: %v", err)
+		return errors.WrapWithContext(err, "email validation failed")
+	}
+
+	var password string
+	for {
+		fmt.Print("Enter new admin password (minimum 8 characters): ")
+		passBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read password: %v", err)
+			return err
+		}
+		fmt.Println()
+
+		password = strings.TrimSpace(string(passBytes))
+		if err := validation.ValidatePassword(password); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			continue
+		}
+
+		fmt.Print("Confirm new admin password: ")
+		confirmBytes, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			logger.Error("Failed to read confirmation password: %v", err)
+			return err
+		}
+		fmt.Println()
+
+		confirm := strings.TrimSpace(string(confirmBytes))
+		if password != confirm {
+			fmt.Println("Error: Passwords do not match. Please try again.")
+			continue
+		}
+		break
+	}
+
+	if err := adminMgr.ChangeAdminPassword(email, password); err != nil {
+		logger.Error("Failed to change admin password: %v", err)
+		return err
+	}
+
+	elapsed := time.Since(startTime).Round(time.Second)
+	logger.Success("Password changed in %s", elapsed)
+	return nil
 }
 
 func runUpdateLicenseKey(logger *logging.Logger, startTime time.Time) error {
