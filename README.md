@@ -1,19 +1,28 @@
 # Infinity Metrics Installer
 
-Infinity Metrics is a powerful, privacy-first, ai-powered web analytics platform designed for self-hosting. This repository contains zero-configuration installer for the Infinity Metrics analytics platform. 
+Break free from trust-killing web analytics. Infinity Metrics is a privacy-first, AI-powered web analytics platform designed for self-hosting. This repository contains the zero-configuration installer for the Infinity Metrics analytics platform.
+
+## Why Infinity Metrics?
+
+**Own Your Data**: Your analytics data stays on your server in a simple SQLite file. Export, query, and take it anywhere.
+
+**Privacy-First**: Cookieless tracking, GDPR-compliant by default, no personal data stored.
+
+**AI-Powered Insights**: Ask questions in plain English to explore your data and uncover actionable insights.
 
 ## Features
 
-- **One-command installation**: Get up and running in minutes with a single command
-- **Zero-downtime updates**: Seamless upgrades without service interruption
+- **One-command installation**: Get up and running in less than 3 minutes
+- **Zero-downtime updates**: Seamless upgrades without service interruption  
 - **Automated backups**: Built-in database backup scheduling
 - **Secure by default**: Automatic HTTPS certificate management
+- **Pay once, own forever**: One flat fee for lifetime access with unlimited scaling
 
 
 ## Installation
 
 ```bash
-curl -fsSL https://getinfinitymetrics.com/install -o install.sh && sudo bash install.sh
+curl -fsSL https://getinfinitymetrics.com/install | sh
 ```
 
 ## License
