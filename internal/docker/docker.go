@@ -405,21 +405,24 @@ func (d *Docker) DeployApp(data config.ConfigData, name string) error {
 			d.logger.Warn("Failed to cleanup existing container %s: %v", name, cleanupErr)
 		}
 	}
-	_, err := d.RunCommand("run", "-d",
+	args := []string{"run", "-d",
 		"--name", name,
 		"--network", NetworkName,
 		"--pull", "always",
-		"-v", filepath.Join(data.InstallDir, "storage")+":/app/storage",
-		"-v", filepath.Join(data.InstallDir, "logs")+":/app/logs",
+		"-v", filepath.Join(data.InstallDir, "storage") + ":/app/storage",
+		"-v", filepath.Join(data.InstallDir, "logs") + ":/app/logs",
 		"-e", "INFINITY_METRICS_LOG_LEVEL=debug",
 		"-e", "INFINITY_METRICS_APP_PORT=8080",
-		"-e", "INFINITY_METRICS_DOMAIN="+data.Domain,
-		"-e", "INFINITY_METRICS_PRIVATE_KEY="+data.PrivateKey,
-		"-e", "SERVER_INSTANCE_ID="+name,
+		"-e", "INFINITY_METRICS_DOMAIN=" + data.Domain,
+		"-e", "INFINITY_METRICS_PRIVATE_KEY=" + data.PrivateKey,
+		"-e", "SERVER_INSTANCE_ID=" + name,
+		"-e", "INFINITY_METRICS_LICENSE_KEY=" + data.LicenseKey,
 		"--memory=512m",
 		"--restart", "unless-stopped",
 		data.AppImage,
-	)
+	}
+	
+	_, err := d.RunCommand(args...)
 	if err != nil {
 		return fmt.Errorf("deploy %s: %w", name, err)
 	}
